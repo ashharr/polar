@@ -1,14 +1,12 @@
-from typing import Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import Field
 
 from polar.auth.dependencies import Auth
+from polar.authz.service import AccessType, Authz
 from polar.enums import Platforms
 from polar.exceptions import NotPermitted, ResourceNotFound, StripeError
-from polar.issue.schemas import Issue, IssueRead
-from polar.issue.service import issue as issue_service
+from polar.issue.schemas import Issue
 from polar.models import Pledge, Repository
 from polar.organization.schemas import Organization
 from polar.organization.service import organization as organization_service
@@ -64,6 +62,7 @@ async def search(
     | None = Query(default=None, description="Search pledges to this issue"),
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.current_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> ListResource[PledgeSchema]:
     list_by_orgs: list[UUID] = []
     list_by_repos: list[UUID] = []
@@ -139,18 +138,11 @@ async def search(
         load_issue=True,
     )
 
-    user_memberships = await user_organization_service.list_by_user_id(
-        session,
-        auth.user.id,
-    )
-
     return ListResource(
         items=[
             PledgeSchema.from_db(p)
             for p in pledges
-            if pledge_service.user_can_read_pledge(
-                auth.user, p, user_memberships
-            )  # Authorization
+            if await authz.can(auth.subject, AccessType.read, p)
         ]
     )
 
@@ -167,6 +159,7 @@ async def get(
     id: UUID,
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.current_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> PledgeSchema:
     pledge = await pledge_service.get_with_loaded(session, id)
     if not pledge:
@@ -175,12 +168,7 @@ async def get(
             detail="Pledge not found",
         )
 
-    user_memberships = await user_organization_service.list_by_user_id(
-        session,
-        auth.user.id,
-    )
-
-    if not pledge_service.user_can_read_pledge(auth.user, pledge, user_memberships):
+    if not await authz.can(auth.subject, AccessType.read, pledge):
         raise HTTPException(
             status_code=403,
             detail="Access denied",
@@ -333,17 +321,13 @@ async def get_pledge(
     pledge_id: UUID,
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.current_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> PledgeRead:
     pledge = await pledge_service.get_with_loaded(session, pledge_id)
     if not pledge:
         raise HTTPException(status_code=404, detail="Pledge not found")
 
-    user_memberships = await user_organization_service.list_by_user_id(
-        session,
-        auth.user.id,
-    )
-
-    if not pledge_service.user_can_read_pledge(auth.user, pledge, user_memberships):
+    if not await authz.can(auth.subject, AccessType.read, pledge):
         raise HTTPException(
             status_code=403,
             detail="Access denied",
@@ -391,6 +375,9 @@ async def list_personal_pledges(
     auth: Auth = Depends(Auth.current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[PledgeRead]:
+    if not auth.user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     pledges = await pledge_service.list_by_pledging_user(session, auth.user.id)
     return [PledgeRead.from_db(p) for p in pledges]
 
@@ -429,6 +416,9 @@ async def dispute_pledge(
     auth: Auth = Depends(Auth.current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> PledgeRead:
+    if not auth.user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     pledge = await pledge_service.get(session, pledge_id)
     if not pledge:
         raise HTTPException(status_code=404, detail="Pledge not found")

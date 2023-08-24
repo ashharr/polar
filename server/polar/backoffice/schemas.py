@@ -2,7 +2,6 @@ from datetime import datetime
 from typing import Literal, Self
 from uuid import UUID
 
-from polar.enums import AccountType
 from polar.kit.schemas import Schema
 from polar.models.pledge import Pledge
 from polar.pledge.schemas import Pledge as PledgeSchema
@@ -12,6 +11,8 @@ from polar.reward.schemas import Reward
 class BackofficeReward(Reward):
     transfer_id: str | None
     issue_reward_id: UUID
+    pledge_payment_id: str | None
+    pledger_email: str | None
 
 
 class BackofficePledge(PledgeSchema):

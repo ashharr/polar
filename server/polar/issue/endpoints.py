@@ -2,9 +2,9 @@ from typing import List, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import Field
 
 from polar.auth.dependencies import Auth
+from polar.authz.service import AccessType, Authz
 from polar.dashboard.schemas import IssueListType, IssueSortBy, IssueStatus
 from polar.enums import Platforms
 from polar.exceptions import ResourceNotFound
@@ -14,14 +14,13 @@ from polar.integrations.github.service.issue import github_issue as github_issue
 from polar.integrations.github.service.organization import (
     github_organization as github_organization_service,
 )
-from polar.kit.extensions.sqlalchemy import sql
+from polar.integrations.github.service.url import github_url
 from polar.kit.schemas import Schema
 from polar.models import Issue
 from polar.organization.schemas import Organization as OrganizationSchema
 from polar.organization.service import organization as organization_service
 from polar.pledge.service import pledge as pledge_service
 from polar.postgres import AsyncSession, get_db_session
-from polar.repository.endpoints import user_can_read, user_can_write
 from polar.repository.schemas import Repository as RepositorySchema
 from polar.repository.service import repository as repository_service
 from polar.tags.api import Tags
@@ -74,6 +73,7 @@ async def search(
     ),
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.optional_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> ListResource[IssueSchema]:
     org = await organization_service.get_by_name(session, platform, organization_name)
     if not org:
@@ -129,7 +129,84 @@ async def search(
         have_polar_badge=have_badge,
     )
 
-    return ListResource(items=[IssueSchema.from_db(i) for i in issues])
+    return ListResource(
+        items=[
+            IssueSchema.from_db(i)
+            for i in issues
+            if await authz.can(auth.subject, AccessType.read, i)
+        ]
+    )
+
+
+@router.get(
+    "/issues/lookup",
+    response_model=IssueSchema,
+    tags=[Tags.INTERNAL],
+)
+async def lookup(
+    external_url: str
+    | None = Query(
+        default=None,
+        description="URL to issue on external source",
+        example="https://github.com/polarsource/polar/issues/897",
+    ),
+    session: AsyncSession = Depends(get_db_session),
+) -> IssueSchema:
+    if not external_url:
+        raise HTTPException(
+            status_code=400,
+            detail="No search parameter specified",
+        )
+
+    if external_url:
+        urls = github_url.parse_urls(external_url)
+        if len(urls) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid external_url",
+            )
+
+        url = urls[0]
+
+        if not url.owner or not url.repo:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid external_url",
+            )
+
+        client = get_polar_client()
+
+        try:
+            res = (
+                await github_organization_service.sync_external_org_with_repo_and_issue(
+                    session,
+                    client=client,
+                    org_name=url.owner,
+                    repo_name=url.repo,
+                    issue_number=url.number,
+                )
+            )
+            org, repo, tmp_issue = res
+        except ResourceNotFound:
+            raise HTTPException(
+                status_code=404,
+                detail="Issue by external_url not found",
+            )
+
+        # get for return
+        issue = await issue_service.get_loaded(session, tmp_issue.id)
+        if not issue:
+            raise HTTPException(
+                status_code=404,
+                detail="Issue not found",
+            )
+
+        return IssueSchema.from_db(issue)
+
+    raise HTTPException(
+        status_code=404,
+        detail="Issue not found",
+    )
 
 
 @router.get(
@@ -143,6 +220,7 @@ async def get(
     id: UUID,
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.optional_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> IssueSchema:
     issue = await issue_service.get_loaded(session, id)
 
@@ -152,7 +230,7 @@ async def get(
             detail="Issue not found",
         )
 
-    if not await user_can_read(session, auth, issue.repository):
+    if not await authz.can(auth.subject, AccessType.read, issue):
         raise HTTPException(
             status_code=404,
             detail="Issue not found",
@@ -173,6 +251,7 @@ async def update(
     update: UpdateIssue,
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.current_user),
+    authz: Authz = Depends(Authz.authz),
 ) -> IssueSchema:
     issue = await issue_service.get_loaded(session, id)
 
@@ -182,7 +261,7 @@ async def update(
             detail="Issue not found",
         )
 
-    if not await user_can_write(session, auth, issue.repository):
+    if not await authz.can(auth.subject, AccessType.write, issue):
         raise HTTPException(
             status_code=401,
             detail="Unauthorized",
@@ -218,6 +297,7 @@ async def confirm(
     body: ConfirmIssue,
     auth: Auth = Depends(Auth.current_user),
     session: AsyncSession = Depends(get_db_session),
+    authz: Authz = Depends(Authz.authz),
 ) -> IssueSchema:
     issue = await issue_service.get_loaded(session, id)
     if not issue:
@@ -226,7 +306,13 @@ async def confirm(
             detail="Issue not found",
         )
 
-    if not await user_can_write(session, auth, issue.repository):
+    if not await authz.can(auth.subject, AccessType.write, issue):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+        )
+
+    if not auth.user:
         raise HTTPException(
             status_code=401,
             detail="Unauthorized",
@@ -280,66 +366,6 @@ async def confirm(
 #
 # Internal APIs below
 #
-
-
-class IssueResources(Schema):
-    issue: IssueSchema
-    organization: OrganizationSchema | None
-    repository: RepositorySchema | None
-
-
-@router.get(
-    "/{platform}/{org_name}/{repo_name}/issues/{number}",
-    response_model=IssueResources,
-    tags=[Tags.INTERNAL],
-)
-async def get_or_sync_external(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    number: int,
-    include: str = "organization,repository",
-    session: AsyncSession = Depends(get_db_session),
-) -> IssueResources:
-    includes = include.split(",")
-    client = get_polar_client()
-
-    try:
-        res = await github_organization_service.sync_external_org_with_repo_and_issue(
-            session,
-            client=client,
-            org_name=org_name,
-            repo_name=repo_name,
-            issue_number=number,
-        )
-        org, repo, tmp_issue = res
-    except ResourceNotFound:
-        raise HTTPException(
-            status_code=404,
-            detail="Organization, repo and issue combination not found",
-        )
-
-    included_org = None
-    if "organization" in includes:
-        included_org = OrganizationSchema.from_db(org)
-
-    included_repo = None
-    if "repository" in includes:
-        included_repo = RepositorySchema.from_db(repo)
-
-    # get for return
-    issue = await issue_service.get_loaded(session, tmp_issue.id)
-    if not issue:
-        raise HTTPException(
-            status_code=404,
-            detail="Issue not found",
-        )
-
-    return IssueResources(
-        issue=IssueSchema.from_db(issue),
-        organization=included_org,
-        repository=included_repo,
-    )
 
 
 @router.get(
@@ -492,6 +518,12 @@ async def add_issue_comment(
         raise HTTPException(
             status_code=404,
             detail="Issue not found",
+        )
+
+    if not auth.user:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
         )
 
     message = comment.message

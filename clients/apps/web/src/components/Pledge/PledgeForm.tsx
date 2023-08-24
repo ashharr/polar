@@ -7,14 +7,7 @@ import { useTheme } from 'next-themes'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { api } from 'polarkit/api'
-import {
-  ApiError,
-  Issue,
-  IssueRead,
-  Organization,
-  PledgeMutationResponse,
-  Repository,
-} from 'polarkit/api/client'
+import { ApiError, Issue, PledgeMutationResponse } from 'polarkit/api/client'
 import { MoneyInput, PrimaryButton } from 'polarkit/components/ui'
 import { getCentsInDollarString } from 'polarkit/money'
 import { classNames } from 'polarkit/utils'
@@ -67,23 +60,19 @@ const generateRedirectURL = (
 }
 
 const PledgeForm = ({
-  organization,
-  repository,
   issue,
   asOrg,
   gotoURL,
   onAmountChange: onAmountChangeProp,
 }: {
-  issue: IssueRead | Issue
-  organization: Organization
-  repository: Repository
+  issue: Issue
   asOrg?: string
   gotoURL?: string
   onAmountChange?: (amount: number) => void
 }) => {
   const [pledge, setPledge] = useState<PledgeMutationResponse | null>(null)
   const [amount, setAmount] = useState<number>(
-    organization.pledge_minimum_amount,
+    issue.repository.organization.pledge_minimum_amount,
   )
   const [email, setEmail] = useState('')
   const [errorMessage, setErrorMessage] = useState<string>('')
@@ -100,7 +89,8 @@ const PledgeForm = ({
     if (!isValidEmail) {
       return false
     }
-    return amount >= organization.pledge_minimum_amount
+
+    return amount >= issue.repository.organization.pledge_minimum_amount
   }
 
   // Redirect to personal dashboard if authenticated unless gotoURL is set
@@ -129,9 +119,9 @@ const PledgeForm = ({
 
   const createPledge = async (pledgeSync: PledgeSync) => {
     return await api.pledges.createPledge({
-      platform: organization.platform,
-      orgName: organization.name,
-      repoName: repository.name,
+      platform: issue.repository.organization.platform,
+      orgName: issue.repository.organization.name,
+      repoName: issue.repository.name,
       number: issue.number,
       requestBody: {
         issue_id: issue.id,
@@ -148,9 +138,9 @@ const PledgeForm = ({
     }
 
     return await api.pledges.updatePledge({
-      platform: organization.platform,
-      orgName: organization.name,
-      repoName: repository.name,
+      platform: issue.repository.organization.platform,
+      orgName: issue.repository.organization.name,
+      repoName: issue.repository.name,
       number: issue.number,
       pledgeId: pledge.id,
       requestBody: {
@@ -162,7 +152,9 @@ const PledgeForm = ({
   }
 
   const shouldSynchronizePledge = (pledgeSync: PledgeSync) => {
-    if (pledgeSync.amount < organization.pledge_minimum_amount) {
+    if (
+      pledgeSync.amount < issue.repository.organization.pledge_minimum_amount
+    ) {
       return false
     }
 
@@ -196,7 +188,7 @@ const PledgeForm = ({
     setSyncing(true)
     setErrorMessage('')
 
-    let updatedPledge: PledgeMutationResponse
+    let updatedPledge: PledgeMutationResponse | undefined
 
     try {
       if (!pledge) {
@@ -233,13 +225,13 @@ const PledgeForm = ({
     }
     const amountInCents = newAmount * 100
 
-    if (amount === organization.pledge_minimum_amount) {
+    if (amount === issue.repository.organization.pledge_minimum_amount) {
       posthog.capture('Pledge amount changed', {
         Amount: newAmount,
-        'Organization ID': organization.id,
-        'Organization Name': organization.name,
-        'Repository ID': repository.id,
-        'Repository Name': repository.name,
+        'Organization ID': issue.repository.organization.id,
+        'Organization Name': issue.repository.organization.name,
+        'Repository ID': issue.repository.id,
+        'Repository Name': issue.repository.name,
         'Issue ID': issue.id,
         'Issue Number': issue.number,
       })
@@ -266,10 +258,10 @@ const PledgeForm = ({
 
     if (email === '') {
       posthog.capture('Pledge email entered', {
-        'Organization ID': organization.id,
-        'Organization Name': organization.name,
-        'Repository ID': repository.id,
-        'Repository Name': repository.name,
+        'Organization ID': issue.repository.organization.id,
+        'Organization Name': issue.repository.organization.name,
+        'Repository ID': issue.repository.id,
+        'Repository Name': issue.repository.name,
         'Issue ID': issue.id,
         'Issue Number': issue.number,
       })
@@ -297,6 +289,9 @@ const PledgeForm = ({
   }
 
   const showStripeForm = pledge
+
+  const organization = issue.repository.organization
+  const repository = issue.repository
 
   return (
     <>

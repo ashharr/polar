@@ -1,4 +1,3 @@
-import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,21 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from polar.auth.dependencies import Auth
 from polar.authz.service import AccessType, Authz
 from polar.currency.schemas import CurrencyAmount
-from polar.enums import Platforms
 from polar.models.issue_reward import IssueReward
-from polar.models.organization import Organization
 from polar.models.pledge import Pledge as PledgeModel
 from polar.models.pledge_transaction import PledgeTransaction as PledgeTransactionModel
 from polar.organization.schemas import Organization as OrganizationSchema
-from polar.organization.service import organization as organization_service
 from polar.pledge.schemas import Pledge
 from polar.postgres import AsyncSession, get_db_session
 from polar.tags.api import Tags
 from polar.types import ListResource
 from polar.user.schemas import User
-from polar.user_organization.service import (
-    user_organization as user_organization_service,
-)
 
 from .schemas import Reward, RewardState
 from .service import reward_service
@@ -73,7 +66,7 @@ async def search(
         items=[
             to_resource(pledge, reward, transaction)
             for pledge, reward, transaction in rewards
-            if await authz.can(auth.user, AccessType.read, reward)
+            if await authz.can(auth.subject, AccessType.read, reward)
         ]
     )
 
@@ -101,7 +94,6 @@ def to_resource(
             currency="USD",
             amount=round(pledge.amount * 0.9 * reward.share_thousands / 1000),
         )
-        # print(amount, pledge.amount, reward.share_thousands)
 
     return Reward(
         pledge=Pledge.from_db(pledge),
@@ -111,20 +103,3 @@ def to_resource(
         state=RewardState.paid if transaction else RewardState.pending,
         paid_at=transaction.created_at if transaction else None,
     )
-
-
-async def user_can_read(session: AsyncSession, auth: Auth, org: Organization) -> bool:
-    if not auth.user:
-        return False
-
-    user_memberships = await user_organization_service.list_by_user_id(
-        session,
-        auth.user.id,
-    )
-
-    ids = [m.organization_id for m in user_memberships if m.is_admin is True]
-
-    if org.id in ids:
-        return True
-
-    return False

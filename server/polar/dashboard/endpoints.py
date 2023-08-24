@@ -20,7 +20,6 @@ from polar.dashboard.schemas import (
 from polar.enums import Platforms
 from polar.issue.schemas import IssueRead, IssueReferenceRead
 from polar.issue.service import issue
-from polar.models.issue import Issue
 from polar.models.organization import Organization
 from polar.models.repository import Repository
 from polar.models.user import User
@@ -120,7 +119,7 @@ async def get_dashboard(
     # If the authenticated user is viewing the org dashboard for their own "org",
     # also show pledges made by their user.
     show_pledges_for_user: User | None = None
-    if auth.user.username == org_name:
+    if auth.user and auth.user.username == org_name:
         show_pledges_for_user = auth.user
 
     return await dashboard(

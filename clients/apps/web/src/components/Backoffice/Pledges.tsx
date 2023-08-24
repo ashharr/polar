@@ -1,3 +1,5 @@
+'use client'
+
 import { ArrowTopRightOnSquareIcon } from '@heroicons/react/20/solid'
 import Link from 'next/link'
 import { BackofficePledge } from 'polarkit/api/client'
@@ -32,7 +34,7 @@ const Pledges = () => {
               className="text-blue-600"
               href={`/backoffice/issue/${i[0].issue.id}`}
             >
-              {i[0].issue.repository.organization?.name}/
+              {i[0].issue.repository.organization.name}/
               {i[0].issue.repository.name}#{i[0].issue.number}
             </Link>
 
@@ -40,7 +42,7 @@ const Pledges = () => {
 
             <ThinButton
               color="gray"
-              href={`https://github.com/${i[0].issue.repository.organization?.name}/${i[0].issue.repository.name}/issues/${i[0].issue.number}`}
+              href={`https://github.com/${i[0].issue.repository.organization.name}/${i[0].issue.repository.name}/issues/${i[0].issue.number}`}
             >
               <span>GitHub</span>
               <ArrowTopRightOnSquareIcon />
