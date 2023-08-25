@@ -2,7 +2,8 @@
 /* tslint:disable */
 /* eslint-disable */
 
-export type InviteCreate = {
-  note?: string;
+export type Label = {
+  name: string;
+  color: string;
 };
 

@@ -12,8 +12,6 @@ from polar.integrations.github.service.organization import (
 from polar.integrations.github.service.repository import (
     github_repository as github_repository_service,
 )
-from polar.invite.schemas import InviteCreate, InviteRead
-from polar.invite.service import invite as invite_service
 from polar.issue.schemas import Issue
 from polar.issue.service import issue as issue_service
 from polar.kit.schemas import Schema
@@ -28,7 +26,7 @@ from polar.postgres import AsyncSession, get_db_session
 from polar.reward.endpoints import to_resource as reward_to_resource
 from polar.reward.service import reward_service
 from polar.tags.api import Tags
-from polar.types import ListResource
+from polar.types import ListResource, Pagination
 
 from .pledge_service import bo_pledges_service
 from .schemas import (
@@ -84,7 +82,8 @@ async def rewards(
     return ListResource(
         items=[
             r(pledge, reward, transaction) for pledge, reward, transaction in rewards
-        ]
+        ],
+        pagination=Pagination(total_count=len(rewards)),
     )
 
 
@@ -102,7 +101,8 @@ async def rewards_pending(
     return ListResource(
         items=[
             r(pledge, reward, transaction) for pledge, reward, transaction in rewards
-        ]
+        ],
+        pagination=Pagination(total_count=len(rewards)),
     )
 
 
@@ -191,33 +191,6 @@ async def pledge_mark_disputed(
         session, pledge_id, by_user_id=auth.user.id, reason="Disputed via Backoffice"
     )
     return await get_pledge(session, pledge_id)
-
-
-@router.post("/invites/create_code", response_model=InviteRead, tags=[Tags.INTERNAL])
-async def invites_create_code(
-    invite: InviteCreate,
-    auth: Auth = Depends(Auth.backoffice_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> InviteRead:
-    if not auth.user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    res = await invite_service.create_code(session, invite, auth.user)
-    if not res:
-        raise HTTPException(
-            status_code=404,
-            detail="Pledge not found",
-        )
-    return InviteRead.from_db(res)
-
-
-@router.post("/invites/list", response_model=list[InviteRead], tags=[Tags.INTERNAL])
-async def invites_list(
-    auth: Auth = Depends(Auth.backoffice_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> list[InviteRead]:
-    res = await invite_service.list(session)
-    return [InviteRead.from_db(i) for i in res]
 
 
 @router.post(
