@@ -1,12 +1,15 @@
-import structlog
-from fastapi import Response, Request
-from pydantic import validator
 from datetime import datetime
+from uuid import UUID
 
+import structlog
+from fastapi import HTTPException, Request, Response
+from pydantic import validator
+
+from polar.config import settings
 from polar.kit import jwt
 from polar.kit.schemas import Schema
-from polar.config import settings
 from polar.models import User
+from polar.personal_access_token.service import personal_access_token_service
 from polar.postgres import AsyncSession
 from polar.user.service import user as user_service
 
@@ -65,6 +68,16 @@ class AuthService:
         )
 
     @classmethod
+    def generate_pat_token(cls, pat_id: UUID, expires_at: datetime) -> str:
+        return jwt.encode(
+            data={
+                "pat_id": str(pat_id),
+            },
+            secret=settings.SECRET,
+            expires_at=expires_at,
+        )
+
+    @classmethod
     def generate_login_cookie_response(
         cls,
         *,
@@ -98,7 +111,25 @@ class AuthService:
 
         try:
             decoded = jwt.decode(token=token, secret=settings.SECRET)
-            return await user_service.get(session, id=decoded["user_id"])
+
+            if "user_id" in decoded:
+                return await user_service.get(session, id=decoded["user_id"])
+
+            if "pat_id" in decoded:
+                pat = await personal_access_token_service.get(
+                    session, id=decoded["pat_id"], load_user=True
+                )
+                if pat:
+                    await personal_access_token_service.record_usage(session, id=pat.id)
+                    return pat.user
+
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid Personal Access Token",
+                )
+
+            raise Exception("failed to decode token")
+
         except (jwt.DecodeError, jwt.ExpiredSignatureError):
             return None
 
