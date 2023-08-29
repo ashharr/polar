@@ -1,23 +1,27 @@
 from __future__ import annotations
+
+from datetime import datetime
 from typing import Any, List, Set, Union
 from uuid import UUID
-from githubkit import GitHub, Response
-from githubkit.exception import RequestFailed
-from pydantic import ValidationError, parse_obj_as
 
 import structlog
-from polar.exceptions import IntegrityError
+from fastapi.encoders import jsonable_encoder
+from githubkit import GitHub, Response
+from githubkit.exception import RequestFailed
+from githubkit.utils import exclude_unset
+from pydantic import Field, ValidationError, parse_obj_as
+
 import polar.integrations.github.client as github
-from polar.integrations.github.service.pull_request import github_pull_request
-from polar.integrations.github.service.issue import github_issue
+from polar.exceptions import IntegrityError
 from polar.integrations.github.service.api import github_api
+from polar.integrations.github.service.issue import github_issue
+from polar.integrations.github.service.pull_request import github_pull_request
 from polar.issue.hooks import (
     IssueReferenceHook,
     issue_reference_created,
     issue_reference_updated,
 )
 from polar.kit import utils
-
 from polar.models import Organization, Repository
 from polar.models.issue import Issue
 from polar.models.issue_reference import (
@@ -28,38 +32,17 @@ from polar.models.issue_reference import (
 )
 from polar.postgres import AsyncSession, sql
 from polar.worker import enqueue_job
-from fastapi.encoders import jsonable_encoder
-
-from datetime import datetime
-
-from githubkit.utils import exclude_unset
-
-from githubkit.rest.models import (
-    LockedIssueEvent,
-    LabeledIssueEvent,
-    RenamedIssueEvent,
-    UnlabeledIssueEvent,
-    MilestonedIssueEvent,
-    TimelineCommentEvent,
-    StateChangeIssueEvent,
-    TimelineReviewedEvent,
-    DemilestonedIssueEvent,
-    TimelineCommittedEvent,
-    AddedToProjectIssueEvent,
-    ReviewDismissedIssueEvent,
-    ReviewRequestedIssueEvent,
-    TimelineAssignedIssueEvent,
-    TimelineLineCommentedEvent,
-    RemovedFromProjectIssueEvent,
-    TimelineCommitCommentedEvent,
-    TimelineCrossReferencedEvent,
-    TimelineUnassignedIssueEvent,
-    ConvertedNoteToIssueIssueEvent,
-    MovedColumnInProjectIssueEvent,
-    ReviewRequestRemovedIssueEvent,
-)
 
 log = structlog.get_logger()
+
+
+class UnknownIssueEvent(github.rest.GitHubRestModel):
+    """
+    The timeline API is not fully specced out in the github schema.
+    This is a catch-all event for events that we're unable to parse.
+    """
+
+    event: str = Field(default=...)
 
 
 TimelineEventType = Union[
@@ -85,6 +68,7 @@ TimelineEventType = Union[
     github.rest.TimelineAssignedIssueEvent,
     github.rest.TimelineUnassignedIssueEvent,
     github.rest.StateChangeIssueEvent,
+    UnknownIssueEvent,
 ]
 
 
@@ -202,7 +186,6 @@ class GitHubIssueReferencesService:
 
         return res
 
-    # client.rest.issues.async_list_events_for_timeline,
     async def async_list_events_for_timeline_with_headers(
         self,
         client: GitHub[Any],
@@ -212,34 +195,7 @@ class GitHubIssueReferencesService:
         per_page: int = 30,
         page: int = 1,
         etag: str | None = None,
-    ) -> Response[
-        List[
-            Union[
-                LabeledIssueEvent,
-                UnlabeledIssueEvent,
-                MilestonedIssueEvent,
-                DemilestonedIssueEvent,
-                RenamedIssueEvent,
-                ReviewRequestedIssueEvent,
-                ReviewRequestRemovedIssueEvent,
-                ReviewDismissedIssueEvent,
-                LockedIssueEvent,
-                AddedToProjectIssueEvent,
-                MovedColumnInProjectIssueEvent,
-                RemovedFromProjectIssueEvent,
-                ConvertedNoteToIssueIssueEvent,
-                TimelineCommentEvent,
-                TimelineCrossReferencedEvent,
-                TimelineCommittedEvent,
-                TimelineReviewedEvent,
-                TimelineLineCommentedEvent,
-                TimelineCommitCommentedEvent,
-                TimelineAssignedIssueEvent,
-                TimelineUnassignedIssueEvent,
-                StateChangeIssueEvent,
-            ]
-        ]
-    ]:
+    ) -> Response[List[TimelineEventType]]:
         url = f"/repos/{owner}/{repo}/issues/{issue_number}/timeline"
 
         params = {
@@ -252,32 +208,7 @@ class GitHubIssueReferencesService:
             url=url,
             params=exclude_unset(params),
             etag=etag,
-            response_model=List[
-                Union[
-                    LabeledIssueEvent,
-                    UnlabeledIssueEvent,
-                    MilestonedIssueEvent,
-                    DemilestonedIssueEvent,
-                    RenamedIssueEvent,
-                    ReviewRequestedIssueEvent,
-                    ReviewRequestRemovedIssueEvent,
-                    ReviewDismissedIssueEvent,
-                    LockedIssueEvent,
-                    AddedToProjectIssueEvent,
-                    MovedColumnInProjectIssueEvent,
-                    RemovedFromProjectIssueEvent,
-                    ConvertedNoteToIssueIssueEvent,
-                    TimelineCommentEvent,
-                    TimelineCrossReferencedEvent,
-                    TimelineCommittedEvent,
-                    TimelineReviewedEvent,
-                    TimelineLineCommentedEvent,
-                    TimelineCommitCommentedEvent,
-                    TimelineAssignedIssueEvent,
-                    TimelineUnassignedIssueEvent,
-                    StateChangeIssueEvent,
-                ]
-            ],
+            response_model=List[TimelineEventType],
         )
 
     async def sync_issue_references(
@@ -348,16 +279,23 @@ class GitHubIssueReferencesService:
                 issue.github_timeline_etag = res.headers.get("etag", None)
                 await issue.save(session)
 
-            for event in res.parsed_data:
-                ref = await self.parse_issue_timeline_event(
-                    session, org, repo, issue, event, client=client
-                )
-                if ref:
-                    # add data missing from github api
-                    ref = await self.annotate(session, org, ref, client=client)
+            try:
+                for event in res.parsed_data:
+                    ref = await self.parse_issue_timeline_event(
+                        session, org, repo, issue, event, client=client
+                    )
+                    if ref:
+                        # add data missing from github api
+                        ref = await self.annotate(session, org, ref, client=client)
 
-                    # persist
-                    await self.create_reference(session, ref)
+                        # persist
+                        await self.create_reference(session, ref)
+            except ValidationError as e:
+                log.error(
+                    "github.sync_issue_references.parsing_failed",
+                    issue_id=issue.id,
+                )
+                raise e
 
             # No more pages
             if len(res.parsed_data) < 100:
@@ -585,10 +523,11 @@ class GitHubIssueReferencesService:
                 commit_sha=ref.commit_id,
             )
 
-            if branches and branches.parsed_data:
-                b = branches.parsed_data
-                if len(b) == 1:
-                    ref.branch_name = b[0].name
+            if branches.status_code == 200:
+                if branches and branches.parsed_data:
+                    b = branches.parsed_data
+                    if len(b) == 1:
+                        ref.branch_name = b[0].name
 
             # Get commit message
             commit = await client.rest.repos.async_get_commit(
@@ -596,12 +535,13 @@ class GitHubIssueReferencesService:
                 repo=ref.repository_name,
                 ref=ref.commit_id,
             )
-            try:
-                if commit and commit.parsed_data.commit.message:
-                    ref.message = commit.parsed_data.commit.message
-            except ValidationError:
-                # githubkit can crash with a validation error inside commit.parsed_data
-                pass
+
+            if commit.status_code == 200:
+                try:
+                    if commit and commit.parsed_data.commit.message:
+                        ref.message = commit.parsed_data.commit.message
+                except ValidationError:
+                    pass  # don't panic on validation errors
 
         return ref
 
