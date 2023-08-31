@@ -99,7 +99,10 @@ class GithubIssueService(IssueService):
             return []
 
         records = await self.upsert_many(
-            session, schemas, constraints=[Issue.external_id]
+            session,
+            schemas,
+            constraints=[Issue.external_id],
+            mutable_keys=IssueCreate.__mutable_keys__,
         )
         for record in records:
             await issue_upserted.call(IssueHook(session, record))
@@ -442,9 +445,7 @@ class GithubIssueService(IssueService):
         ],
     ) -> Issue:
         labels = github.jsonify(github_labels)
-        # TODO: Improve typing here
-        issue.labels = labels  # type: ignore
-        # issue.issue_modified_at = event.issue.updated_at
+        issue.labels = labels
         issue.has_pledge_badge_label = Issue.contains_pledge_badge_label(labels)
         session.add(issue)
         await session.commit()

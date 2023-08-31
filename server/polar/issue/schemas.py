@@ -29,7 +29,7 @@ from polar.models.issue_reference import (
 )
 from polar.organization.schemas import Organization
 from polar.repository.schemas import Repository
-from polar.types import JSONAny
+from polar.types import JSONAny, JSONDict
 
 log = structlog.get_logger()
 
@@ -99,7 +99,7 @@ class Issue(Schema):
                 for label in i.labels
                 if "name" in label and "color" in label
             ]
-            if i.labels
+            if i.labels and isinstance(i.labels, list)
             else []
         )
 
@@ -299,15 +299,19 @@ class IssueCreate(IssueAndPullRequestBase):
                 ret.body
             )
 
-        # excluding: confused, minus_one
-        ret.positive_reactions_count = (
-            data.reactions.plus_one
-            + data.reactions.laugh
-            + data.reactions.heart
-            + data.reactions.hooray
-            + data.reactions.eyes
-            + data.reactions.rocket
-        )
+        # this is not good, we're risking setting positive_reactions_count to 0 if the
+        # payload is missing
+        # TODO: only update if payload actually is set
+        if data.reactions:
+            # excluding: confused, minus_one
+            ret.positive_reactions_count = (
+                data.reactions.plus_one
+                + data.reactions.laugh
+                + data.reactions.heart
+                + data.reactions.hooray
+                + data.reactions.eyes
+                + data.reactions.rocket
+            )
 
         ret.total_engagement_count = data.reactions.total_count + data.comments
 
@@ -392,13 +396,21 @@ class IssueReferenceRead(Schema):
         match m.reference_type:
             case ReferenceType.PULL_REQUEST:
                 if pr := m.pull_request:
-                    avatar = pr.author.get("avatar_url", None) if pr.author else None
+                    avatar = (
+                        pr.author.get("avatar_url", None)
+                        if pr.author and isinstance(pr.author, dict)
+                        else None
+                    )
                     if not avatar:
                         raise Exception(
                             "unable to convert IssueReference to IssueReferenceRead"
                         )
 
-                    login = pr.author.get("login", None) if pr.author else None
+                    login = (
+                        pr.author.get("login", None)
+                        if pr.author and isinstance(pr.author, dict)
+                        else None
+                    )
                     if not login:
                         raise Exception(
                             "unable to convert IssueReference to IssueReferenceRead"

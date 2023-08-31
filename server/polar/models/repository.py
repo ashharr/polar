@@ -13,13 +13,11 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from polar.enums import Platforms
 from polar.kit.db.models import RecordModel
 from polar.kit.extensions.sqlalchemy import PostgresUUID, StringEnum
-from polar.visibility import Visibility
 
 if TYPE_CHECKING:  # pragma: no cover
     from polar.models.organization import Organization
@@ -89,31 +87,3 @@ class Repository(RecordModel):
 
     is_archived: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_disabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-
-    @hybrid_property
-    def visibility(self) -> Visibility:
-        return Visibility.PRIVATE if self.is_private else Visibility.PUBLIC
-
-    __mutables__ = {
-        "name",
-        "description",
-        "open_issues",
-        "forks",
-        "stars",
-        "watchers",
-        "main_branch",
-        "topics",
-        "license",
-        "homepage",
-        "repository_pushed_at",
-        "repository_modified_at",
-        "is_private",
-        "is_fork",
-        "is_issues_enabled",
-        "is_wiki_enabled",
-        "is_pages_enabled",
-        "is_downloads_enabled",
-        "is_archived",
-        "is_disabled",
-        "deleted_at",
-    }

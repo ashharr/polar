@@ -1,19 +1,48 @@
-import types
 import functools
+import types
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, TypedDict, ParamSpec, TypeVar, Awaitable, Callable
-from pydantic import BaseModel
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    ParamSpec,
+    TypedDict,
+    TypeVar,
+)
 
 import structlog
-from arq import func, cron
-from arq.connections import RedisSettings, ArqRedis, create_pool as arq_create_pool
-from arq.jobs import Job
-from arq.worker import Function
-from arq.typing import SecondsTimedelta, OptionType
+from arq import cron, func
+from arq.connections import ArqRedis, RedisSettings
+from arq.connections import create_pool as arq_create_pool
 from arq.cron import CronJob
+from arq.jobs import Job
+from arq.typing import OptionType, SecondsTimedelta
+from arq.worker import Function
+from pydantic import BaseModel
 
 from polar.config import settings
 from polar.context import ExecutionContext
+
+
+async def create_pool() -> ArqRedis:
+    return await arq_create_pool(WorkerSettings.redis_settings)
+
+
+arq_pool: ArqRedis | None = None
+glob_arq_pool: ArqRedis | None = None
+
+
+@asynccontextmanager
+async def lifespan() -> AsyncGenerator[None, Any]:
+    global arq_pool
+    arq_pool = await create_pool()
+    yield
+    await arq_pool.close(True)
+    arq_pool = None
+
 
 log = structlog.get_logger()
 
@@ -45,12 +74,22 @@ class WorkerSettings:
     redis_settings = RedisSettings().from_dsn(settings.redis_url)
 
     @staticmethod
-    async def startup(ctx: WorkerContext) -> None:
+    async def on_startup(ctx: WorkerContext) -> None:
         log.info("polar.worker.startup")
+        global arq_pool
+        if arq_pool:
+            raise Exception("arq_pool already exists in startup")
+        arq_pool = await create_pool()
 
     @staticmethod
-    async def shutdown(ctx: WorkerContext) -> None:
+    async def on_shutdown(ctx: WorkerContext) -> None:
         log.info("polar.worker.shutdown")
+        global arq_pool
+        if arq_pool:
+            await arq_pool.close(True)
+            arq_pool = None
+        else:
+            raise Exception("arq_pool not set in shutdown")
 
     @staticmethod
     async def on_job_start(ctx: JobContext) -> None:
@@ -70,17 +109,19 @@ class WorkerSettings:
         )
 
 
-async def create_pool() -> ArqRedis:
-    return await arq_create_pool(WorkerSettings.redis_settings)
-
-
 async def enqueue_job(name: str, *args: Any, **kwargs: Any) -> Job | None:
     ctx = ExecutionContext.current()
     kwargs["polar_context"] = PolarWorkerContext(
         is_during_installation=ctx.is_during_installation,
     )
-    redis = await create_pool()
-    return await redis.enqueue_job(name, *args, **kwargs)
+    return await _enqueue_job(name, *args, **kwargs)
+
+
+async def _enqueue_job(name: str, *args: Any, **kwargs: Any) -> Job | None:
+    if not arq_pool:
+        raise Exception("arq_pool is not initialized")
+
+    return await arq_pool.enqueue_job(name, *args, **kwargs)
 
 
 Params = ParamSpec("Params")
@@ -143,4 +184,4 @@ def interval(
     return decorator
 
 
-__all__ = ["WorkerSettings", "task", "create_pool", "enqueue_job", "JobContext"]
+__all__ = ["WorkerSettings", "task", "lifespan", "enqueue_job", "JobContext"]

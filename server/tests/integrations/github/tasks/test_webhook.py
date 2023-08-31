@@ -1,30 +1,27 @@
 from __future__ import annotations
 
-from typing import Any
 from datetime import datetime
+from typing import Any
 from unittest.mock import ANY, patch
 
+import httpx
 import pytest
-from pytest_mock import MockerFixture
 from arq.connections import ArqRedis
+from pytest_mock import MockerFixture
 
-from polar.integrations.github import service
-from polar.integrations.github import client as github
-from polar.kit import utils
-from polar.models.organization import Organization
-from polar.organization.schemas import OrganizationCreate
 from polar.enums import Platforms
-from polar.postgres import AsyncSession, AsyncSessionLocal
+from polar.integrations.github import client as github
+from polar.integrations.github import service
 from polar.integrations.github.tasks import webhook as webhook_tasks
+from polar.kit import utils
+from polar.kit.extensions.sqlalchemy import sql
+from polar.models.organization import Organization
+from polar.models.repository import Repository
+from polar.organization.schemas import OrganizationCreate
+from polar.postgres import AsyncSession, AsyncSessionLocal
 from polar.repository.schemas import RepositoryCreate
 from polar.worker import JobContext, PolarWorkerContext
 from tests.fixtures.webhook import TestWebhook, TestWebhookFactory
-from polar.integrations.github.service.repository import (
-    github_repository as github_repository_service,
-)
-import httpx
-import respx
-
 
 FAKE_CTX: JobContext = {
     "redis": ArqRedis(),
@@ -79,7 +76,18 @@ async def create_org(
         installation_suspended_at=event.installation.suspended_at,
     )
     async with AsyncSessionLocal() as session:
-        org = await service.github_organization.upsert(session, create_schema)
+        stmt = (
+            sql.insert(Organization)
+            .values(**create_schema.dict())
+            .on_conflict_do_update(
+                index_elements=[Organization.external_id], set_={**create_schema.dict()}
+            )
+            .returning(Organization)
+            .execution_options(populate_existing=True)
+        )
+        res = await session.execute(stmt)
+        org = res.scalars().one()
+
         org.status = status
         session.add(org)
         await session.commit()
@@ -96,17 +104,21 @@ async def create_repositories(github_webhook: TestWebhookFactory) -> Organizatio
 
     async with AsyncSessionLocal() as session:
         for repo in parsed.repositories_added:
-            await github_repository_service.upsert(
-                session,
-                RepositoryCreate(
-                    platform=Platforms.github,
-                    external_id=repo.id,
-                    organization_id=org.id,
-                    name=repo.name,
-                    is_private=repo.private,
-                ),
+            create_schema = RepositoryCreate(
+                platform=Platforms.github,
+                external_id=repo.id,
+                organization_id=org.id,
+                name=repo.name,
+                is_private=repo.private,
             )
 
+            stmt = (
+                sql.insert(Repository)
+                .values(**create_schema.dict())
+                .on_conflict_do_nothing()
+            )
+            await session.execute(stmt)
+            await session.commit()
     return org
 
 
@@ -143,7 +155,7 @@ async def test_webhook_installation_suspend(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     org = await create_org(github_webhook, status=Organization.Status.INACTIVE)
 
@@ -169,7 +181,7 @@ async def test_webhook_installation_unsuspend(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     org = await create_org(github_webhook, status=Organization.Status.SUSPENDED)
 
@@ -195,7 +207,7 @@ async def test_webhook_installation_delete(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     hook = github_webhook.create("installation.deleted")
     org_id = hook["installation"]["account"]["id"]
@@ -373,7 +385,7 @@ async def test_webhook_repositories_added(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     hook = github_webhook.create("installation_repositories.added")
     new_repo = hook["repositories_added"][0]
@@ -421,7 +433,7 @@ async def test_webhook_repositories_removed(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     hook = github_webhook.create("installation_repositories.removed")
     delete_repo = hook["repositories_removed"][0]
@@ -471,7 +483,7 @@ async def test_webhook_issues_opened(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     await create_repositories(github_webhook)
     hook = github_webhook.create("issues.opened")
@@ -500,7 +512,7 @@ async def test_webhook_issues_closed(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     # create issue
     await create_repositories(github_webhook)
@@ -541,7 +553,7 @@ async def test_webhook_issues_labeled(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     await create_repositories(github_webhook)
     hook = await create_issue(github_webhook)
@@ -565,6 +577,7 @@ async def test_webhook_issues_labeled(
         issue = await service.github_issue.get_by_external_id(session, issue_id)
         assert issue is not None
         assert issue.labels is not None
+        assert isinstance(issue.labels, list)
         assert issue.labels[0]["name"] == hook["issue"]["labels"][0]["name"]
 
 
@@ -576,7 +589,7 @@ async def test_webhook_pull_request_opened(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     hook = github_webhook.create("pull_request.opened")
     pr_id = hook["pull_request"]["id"]
@@ -601,7 +614,7 @@ async def test_webhook_pull_request_edited(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     hook = github_webhook.create("pull_request.edited")
     pr_id = hook["pull_request"]["id"]
@@ -627,7 +640,7 @@ async def test_webhook_pull_request_synchronize(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     await create_pr(github_webhook)
     hook = github_webhook.create("pull_request.synchronize")
@@ -660,7 +673,7 @@ async def test_webhook_issues_deleted(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     await create_repositories(github_webhook)
 
@@ -718,7 +731,7 @@ async def test_webhook_opened_with_label(
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
     # Capture and prevent any calls to enqueue_job
-    mocker.patch("arq.connections.ArqRedis.enqueue_job")
+    mocker.patch("polar.worker._enqueue_job")
 
     embed_mock = mocker.patch(
         "polar.integrations.github.service.github_issue.embed_badge"
@@ -747,6 +760,7 @@ async def test_webhook_opened_with_label(
     assert issue is not None
 
     assert issue.labels is not None
+    assert isinstance(issue.labels, list)
     assert issue.labels[0]["name"] == "polar"
 
     assert issue.contains_pledge_badge_label(issue.labels) is True
@@ -769,7 +783,7 @@ async def test_webhook_labeled_remove_badge_body(
     github_webhook: TestWebhookFactory,
     initialize_test_database_function: None,  # reset db before running test
 ) -> None:
-    async def in_process_enqueue_job(pool, name, *args, **kwargs) -> None:  # type: ignore  # noqa: E501
+    async def in_process_enqueue_job(name, *args, **kwargs) -> None:  # type: ignore  # noqa: E501
         if name == "github.issue.sync.issue_references":
             return None  # skip
         if name == "github.issue.sync.issue_dependencies":
@@ -779,7 +793,7 @@ async def test_webhook_labeled_remove_badge_body(
         else:
             raise Exception(f"unexpected job: {name}")
 
-    mocker.patch("arq.connections.ArqRedis.enqueue_job", new=in_process_enqueue_job)
+    mocker.patch("polar.worker._enqueue_job", new=in_process_enqueue_job)
 
     embed_mock = mocker.patch(
         "polar.integrations.github.service.github_issue.embed_badge"
@@ -808,6 +822,7 @@ async def test_webhook_labeled_remove_badge_body(
     assert issue is not None
 
     assert issue.labels is not None
+    assert isinstance(issue.labels, list)
     assert issue.labels[0]["name"] == "polar"
 
     assert issue.contains_pledge_badge_label(issue.labels) is True
@@ -839,6 +854,7 @@ async def test_webhook_labeled_remove_badge_body(
     issue = await service.github_issue.get_by_external_id(session, issue_id)
     assert issue is not None
     assert issue.labels is not None
+    assert isinstance(issue.labels, list)
     assert issue.labels[0]["name"] == "polar"
     assert issue.contains_pledge_badge_label(issue.labels) is True
 

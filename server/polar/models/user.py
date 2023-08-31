@@ -74,13 +74,6 @@ class User(RecordModel):
         Boolean, nullable=False, default=True
     )
 
-    __mutables__ = {
-        "email",
-        "profile",
-        "invite_only_approved",
-        "accepted_terms_of_service",
-    }
-
     def get_platform_oauth_account(self, platform: Platforms) -> OAuthAccount | None:
         return next(
             (
