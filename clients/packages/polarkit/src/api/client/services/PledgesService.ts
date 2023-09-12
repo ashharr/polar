@@ -1,14 +1,14 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { CreatePledgeFromPaymentIntent } from '../models/CreatePledgeFromPaymentIntent';
 import type { ListResource_Pledge_ } from '../models/ListResource_Pledge_';
 import type { Platforms } from '../models/Platforms';
 import type { Pledge } from '../models/Pledge';
-import type { PledgeCreate } from '../models/PledgeCreate';
-import type { PledgeMutationResponse } from '../models/PledgeMutationResponse';
 import type { PledgeRead } from '../models/PledgeRead';
-import type { PledgeResources } from '../models/PledgeResources';
-import type { PledgeUpdate } from '../models/PledgeUpdate';
+import type { PledgeStripePaymentIntentCreate } from '../models/PledgeStripePaymentIntentCreate';
+import type { PledgeStripePaymentIntentMutationResponse } from '../models/PledgeStripePaymentIntentMutationResponse';
+import type { PledgeStripePaymentIntentUpdate } from '../models/PledgeStripePaymentIntentUpdate';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
 import type { BaseHttpRequest } from '../core/BaseHttpRequest';
@@ -82,38 +82,21 @@ export class PledgesService {
   }
 
   /**
-   * Get Pledge With Resources
-   * @returns PledgeResources Successful Response
+   * Create
+   * Creates a pledge from a payment intent
+   * @returns Pledge Successful Response
    * @throws ApiError
    */
-  public getPledgeWithResources({
-    platform,
-    orgName,
-    repoName,
-    number,
-    pledgeId,
-    include = 'organization,repository,issue',
+  public create({
+    requestBody,
   }: {
-    platform: Platforms,
-    orgName: string,
-    repoName: string,
-    number: number,
-    pledgeId: string,
-    include?: string,
-  }): CancelablePromise<PledgeResources> {
+    requestBody: CreatePledgeFromPaymentIntent,
+  }): CancelablePromise<Pledge> {
     return this.httpRequest.request({
-      method: 'GET',
-      url: '/api/v1/{platform}/{org_name}/{repo_name}/issues/{number}/pledge',
-      path: {
-        'platform': platform,
-        'org_name': orgName,
-        'repo_name': repoName,
-        'number': number,
-      },
-      query: {
-        'pledge_id': pledgeId,
-        'include': include,
-      },
+      method: 'POST',
+      url: '/api/v1/pledges',
+      body: requestBody,
+      mediaType: 'application/json',
       errors: {
         422: `Validation Error`,
       },
@@ -121,32 +104,18 @@ export class PledgesService {
   }
 
   /**
-   * Create Pledge
-   * @returns PledgeMutationResponse Successful Response
+   * Create Payment Intent
+   * @returns PledgeStripePaymentIntentMutationResponse Successful Response
    * @throws ApiError
    */
-  public createPledge({
-    platform,
-    orgName,
-    repoName,
-    number,
+  public createPaymentIntent({
     requestBody,
   }: {
-    platform: Platforms,
-    orgName: string,
-    repoName: string,
-    number: number,
-    requestBody: PledgeCreate,
-  }): CancelablePromise<PledgeMutationResponse> {
+    requestBody: PledgeStripePaymentIntentCreate,
+  }): CancelablePromise<PledgeStripePaymentIntentMutationResponse> {
     return this.httpRequest.request({
       method: 'POST',
-      url: '/api/v1/{platform}/{org_name}/{repo_name}/issues/{number}/pledges',
-      path: {
-        'platform': platform,
-        'org_name': orgName,
-        'repo_name': repoName,
-        'number': number,
-      },
+      url: '/api/v1/pledges/payment_intent',
       body: requestBody,
       mediaType: 'application/json',
       errors: {
@@ -159,108 +128,25 @@ export class PledgesService {
   }
 
   /**
-   * Get Pledge
-   * @returns PledgeRead Successful Response
+   * Update Payment Intent
+   * @returns PledgeStripePaymentIntentMutationResponse Successful Response
    * @throws ApiError
    */
-  public getPledge({
-    platform,
-    orgName,
-    repoName,
-    number,
-    pledgeId,
-  }: {
-    platform: Platforms,
-    orgName: string,
-    repoName: string,
-    number: number,
-    pledgeId: string,
-  }): CancelablePromise<PledgeRead> {
-    return this.httpRequest.request({
-      method: 'GET',
-      url: '/api/v1/{platform}/{org_name}/{repo_name}/issues/{number}/pledges/{pledge_id}',
-      path: {
-        'platform': platform,
-        'org_name': orgName,
-        'repo_name': repoName,
-        'number': number,
-        'pledge_id': pledgeId,
-      },
-      errors: {
-        422: `Validation Error`,
-      },
-    });
-  }
-
-  /**
-   * Update Pledge
-   * @returns PledgeMutationResponse Successful Response
-   * @throws ApiError
-   */
-  public updatePledge({
-    platform,
-    orgName,
-    repoName,
-    number,
-    pledgeId,
+  public updatePaymentIntent({
+    id,
     requestBody,
   }: {
-    platform: Platforms,
-    orgName: string,
-    repoName: string,
-    number: number,
-    pledgeId: string,
-    requestBody: PledgeUpdate,
-  }): CancelablePromise<PledgeMutationResponse> {
+    id: string,
+    requestBody: PledgeStripePaymentIntentUpdate,
+  }): CancelablePromise<PledgeStripePaymentIntentMutationResponse> {
     return this.httpRequest.request({
       method: 'PATCH',
-      url: '/api/v1/{platform}/{org_name}/{repo_name}/issues/{number}/pledges/{pledge_id}',
+      url: '/api/v1/pledges/payment_intent/{id}',
       path: {
-        'platform': platform,
-        'org_name': orgName,
-        'repo_name': repoName,
-        'number': number,
-        'pledge_id': pledgeId,
+        'id': id,
       },
       body: requestBody,
       mediaType: 'application/json',
-      errors: {
-        422: `Validation Error`,
-      },
-    });
-  }
-
-  /**
-   * List Personal Pledges
-   * @returns PledgeRead Successful Response
-   * @throws ApiError
-   */
-  public listPersonalPledges(): CancelablePromise<Array<PledgeRead>> {
-    return this.httpRequest.request({
-      method: 'GET',
-      url: '/api/v1/me/pledges',
-    });
-  }
-
-  /**
-   * List Organization Pledges
-   * @returns PledgeResources Successful Response
-   * @throws ApiError
-   */
-  public listOrganizationPledges({
-    platform,
-    orgName,
-  }: {
-    platform: Platforms,
-    orgName: string,
-  }): CancelablePromise<Array<PledgeResources>> {
-    return this.httpRequest.request({
-      method: 'GET',
-      url: '/api/v1/{platform}/{org_name}/pledges',
-      path: {
-        'platform': platform,
-        'org_name': orgName,
-      },
       errors: {
         422: `Validation Error`,
       },

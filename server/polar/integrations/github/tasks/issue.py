@@ -1,15 +1,18 @@
+import random
 from uuid import UUID
+
 import structlog
+
 from polar.integrations.github import service
 from polar.integrations.github.client import get_app_installation_client
-
-from polar.worker import JobContext, PolarWorkerContext, enqueue_job, interval, task
-from polar.postgres import AsyncSessionLocal
-
-from .utils import get_organization_and_repo
-from ..service.issue import github_issue
-from ..service.api import github_api
+from polar.locker import Locker
 from polar.organization.service import organization as organization_service
+from polar.postgres import AsyncSessionLocal
+from polar.worker import JobContext, PolarWorkerContext, enqueue_job, interval, task
+
+from ..service.api import github_api
+from ..service.issue import github_issue
+from .utils import get_organization_and_repo
 
 log = structlog.get_logger()
 
@@ -99,8 +102,11 @@ async def issue_sync_issue_dependencies(
                 session, issue.organization_id, issue.repository_id
             )
 
+            locker = Locker(ctx["redis"])
+
             await service.github_dependency.sync_issue_dependencies(
                 session,
+                locker,
                 org=organization,
                 repo=repository,
                 issue=issue,
@@ -108,14 +114,30 @@ async def issue_sync_issue_dependencies(
 
 
 @interval(
-    minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57},
+    minute={
+        2,
+        12,
+        22,
+        32,
+        42,
+        52,
+    },
     second=0,
 )
 async def cron_refresh_issues(ctx: JobContext) -> None:
     async with AsyncSessionLocal() as session:
         orgs = await organization_service.list_installed(session)
         for org in orgs:
-            client = get_app_installation_client(org.installation_id)
+            issues = await github_issue.list_issues_to_crawl_issue(session, org)
+            if len(issues) == 0:
+                log.info(
+                    "github.issue.sync.cron_refresh_issues",
+                    org_name=org.name,
+                    found_count=len(issues),
+                )
+                continue
+
+            client = get_app_installation_client(org.safe_installation_id)
             try:
                 rate_limit = await github_api.get_rate_limit(client)
             except Exception as e:
@@ -134,8 +156,6 @@ async def cron_refresh_issues(ctx: JobContext) -> None:
                 )
                 continue
 
-            issues = await github_issue.list_issues_to_crawl_issue(session, org)
-
             log.info(
                 "github.issue.sync.cron_refresh_issues",
                 org_name=org.name,
@@ -144,18 +164,39 @@ async def cron_refresh_issues(ctx: JobContext) -> None:
             )
 
             for issue in issues:
-                await enqueue_job("github.issue.sync", issue.id)
+                await enqueue_job(
+                    "github.issue.sync",
+                    issue.id,
+                    _job_id=f"github.issue.sync:{issue.id}",
+                    _defer_by=random.randint(0, 60 * 5),
+                )
 
 
 @interval(
-    minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55},
+    minute={
+        5,
+        15,
+        25,
+        35,
+        45,
+        55,
+    },
     second=0,
 )
 async def cron_refresh_issue_timelines(ctx: JobContext) -> None:
     async with AsyncSessionLocal() as session:
         orgs = await organization_service.list_installed(session)
         for org in orgs:
-            client = get_app_installation_client(org.installation_id)
+            issues = await github_issue.list_issues_to_crawl_timeline(session, org)
+            if len(issues) == 0:
+                log.info(
+                    "github.issue.sync.cron_refresh_issue_timelines",
+                    org_name=org.name,
+                    found_count=len(issues),
+                )
+                continue
+
+            client = get_app_installation_client(org.safe_installation_id)
 
             try:
                 rate_limit = await github_api.get_rate_limit(client)
@@ -175,8 +216,6 @@ async def cron_refresh_issue_timelines(ctx: JobContext) -> None:
                 )
                 continue
 
-            issues = await github_issue.list_issues_to_crawl_timeline(session, org)
-
             log.info(
                 "github.issue.sync.cron_refresh_issue_timelines",
                 org_name=org.name,
@@ -185,4 +224,9 @@ async def cron_refresh_issue_timelines(ctx: JobContext) -> None:
             )
 
             for issue in issues:
-                await enqueue_job("github.issue.sync.issue_references", issue.id)
+                await enqueue_job(
+                    "github.issue.sync.issue_references",
+                    issue.id,
+                    _job_id=f"github.issue.sync.issue_references:{issue.id}",
+                    _defer_by=random.randint(0, 60 * 5),
+                )

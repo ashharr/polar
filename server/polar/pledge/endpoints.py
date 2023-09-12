@@ -2,16 +2,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from polar import locker
 from polar.auth.dependencies import Auth
 from polar.authz.service import AccessType, Authz
 from polar.enums import Platforms
-from polar.exceptions import NotPermitted, ResourceNotFound, StripeError
-from polar.issue.schemas import Issue
-from polar.models import Pledge, Repository
-from polar.organization.schemas import Organization
+from polar.exceptions import ResourceNotFound, Unauthorized
+from polar.issue.service import issue as issue_service
 from polar.organization.service import organization as organization_service
 from polar.postgres import AsyncSession, get_db_session
-from polar.repository.schemas import Repository as RepositorySchema
 from polar.repository.service import repository as repository_service
 from polar.tags.api import Tags
 from polar.types import ListResource, Pagination
@@ -19,15 +17,16 @@ from polar.user_organization.service import (
     user_organization as user_organization_service,
 )
 
+from .payment_intent_service import payment_intent_service
 from .schemas import (
-    Pledge as PledgeSchema,
+    CreatePledgeFromPaymentIntent,
+    PledgeRead,
+    PledgeStripePaymentIntentCreate,
+    PledgeStripePaymentIntentMutationResponse,
+    PledgeStripePaymentIntentUpdate,
 )
 from .schemas import (
-    PledgeCreate,
-    PledgeMutationResponse,
-    PledgeRead,
-    PledgeResources,
-    PledgeUpdate,
+    Pledge as PledgeSchema,
 )
 from .service import pledge as pledge_service
 
@@ -163,16 +162,10 @@ async def get(
 ) -> PledgeSchema:
     pledge = await pledge_service.get_with_loaded(session, id)
     if not pledge:
-        raise HTTPException(
-            status_code=404,
-            detail="Pledge not found",
-        )
+        raise ResourceNotFound()
 
     if not await authz.can(auth.subject, AccessType.read, pledge):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied",
-        )
+        raise Unauthorized()
 
     return PledgeSchema.from_db(pledge)
 
@@ -180,85 +173,40 @@ async def get(
 # Internal APIs below
 
 
-async def get_pledge_or_404(
-    session: AsyncSession,
-    *,
-    pledge_id: UUID,
-    for_repository: Repository,
-) -> Pledge:
-    pledge = await pledge_service.get_with_loaded(session=session, pledge_id=pledge_id)
-
-    if not pledge:
-        raise HTTPException(
-            status_code=404,
-            detail="Pledge not found",
-        )
-
-    if pledge.repository_id != for_repository.id:
-        raise HTTPException(
-            status_code=403, detail="Pledge does not belong to this repository"
-        )
-
-    return pledge
-
-
-@router.get(
-    "/{platform}/{org_name}/{repo_name}/issues/{number}/pledge",
-    response_model=PledgeResources,
+@router.post(
+    "/pledges",
+    response_model=PledgeSchema,
+    tags=[Tags.INTERNAL],
+    description="Creates a pledge from a payment intent",
+    status_code=200,
 )
-async def get_pledge_with_resources(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    number: int,
-    pledge_id: UUID,
-    # Mimic JSON-API's include query format
-    include: str = "organization,repository,issue",
+async def create(
+    create: CreatePledgeFromPaymentIntent,
     session: AsyncSession = Depends(get_db_session),
-) -> PledgeResources:
-    includes = include.split(",")
-
-    try:
-        org, repo, issue = await organization_service.get_with_repo_and_issue(
-            session,
-            platform=platform,
-            org_name=org_name,
-            repo_name=repo_name,
-            issue=number,
+    auth: Auth = Depends(Auth.optional_user),
+    authz: Authz = Depends(Authz.authz),
+    locker: locker.Locker = Depends(locker.get_locker),
+) -> PledgeSchema:
+    async with locker.lock(
+        f"create_pledge_from_intent:{create.payment_intent_id}",
+        timeout=60 * 60,
+        blocking_timeout=5,
+    ):
+        pledge = await payment_intent_service.create_pledge(
+            session=session,
+            payment_intent_id=create.payment_intent_id,
         )
-    except ResourceNotFound as e:
-        raise HTTPException(
-            status_code=404,
-            detail="Organization, repo and issue combination not found",
-        ) from e
 
-    pledge = await get_pledge_or_404(
-        session,
-        pledge_id=pledge_id,
-        for_repository=repo,
-    )
-    included_pledge = PledgeRead.from_db(pledge)
+    ret = await pledge_service.get_with_loaded(session, pledge.id)
+    if not ret:
+        raise ResourceNotFound()
 
-    included_org = None
-    if "organization" in includes:
-        included_org = Organization.from_db(org)
-
-    included_repo = None
-    if "repository" in includes:
-        included_repo = RepositorySchema.from_db(repo)
-
-    included_issue = Issue.from_db(issue) if "issue" in includes else None
-    return PledgeResources(
-        pledge=included_pledge,
-        organization=included_org,
-        repository=included_repo,
-        issue=included_issue,
-    )
+    return PledgeSchema.from_db(ret)
 
 
 @router.post(
-    "/{platform}/{org_name}/{repo_name}/issues/{number}/pledges",
-    response_model=PledgeMutationResponse,
+    "/pledges/payment_intent",
+    response_model=PledgeStripePaymentIntentMutationResponse,
     status_code=200,
     responses={
         400: {"detail": "message"},
@@ -266,144 +214,39 @@ async def get_pledge_with_resources(
         404: {"detail": "message"},
     },
 )
-async def create_pledge(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    number: int,
-    pledge: PledgeCreate,
+async def create_payment_intent(
+    intent: PledgeStripePaymentIntentCreate,
     session: AsyncSession = Depends(get_db_session),
     auth: Auth = Depends(Auth.optional_user),
-) -> PledgeMutationResponse:
-    org, repo, issue = await organization_service.get_with_repo_and_issue(
-        session=session,
-        platform=platform,
-        org_name=org_name,
-        repo_name=repo_name,
-        issue=number,
-    )
-
-    try:
-        return await pledge_service.create_pledge(
-            user=auth.user,
-            org=org,
-            repo=repo,
-            issue=issue,
-            pledge=pledge,
-            session=session,
-        )
-    except ResourceNotFound as e:
-        raise HTTPException(
-            status_code=404,
-            detail=str(e),
-        ) from e
-    except NotPermitted as e:
-        raise HTTPException(
-            status_code=403,
-            detail=str(e),
-        ) from e
-    except StripeError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e),
-        ) from e
-
-
-@router.get(
-    "/{platform}/{org_name}/{repo_name}/issues/{number}/pledges/{pledge_id}",
-    response_model=PledgeRead,
-)
-async def get_pledge(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    number: int,
-    pledge_id: UUID,
-    session: AsyncSession = Depends(get_db_session),
-    auth: Auth = Depends(Auth.current_user),
     authz: Authz = Depends(Authz.authz),
-) -> PledgeRead:
-    pledge = await pledge_service.get_with_loaded(session, pledge_id)
-    if not pledge:
-        raise HTTPException(status_code=404, detail="Pledge not found")
+) -> PledgeStripePaymentIntentMutationResponse:
+    issue = await issue_service.get(session, intent.issue_id)
+    if not issue:
+        raise ResourceNotFound()
 
-    if not await authz.can(auth.subject, AccessType.read, pledge):
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied",
-        )
+    if not await authz.can(auth.subject, AccessType.read, issue):
+        raise Unauthorized()
 
-    return PledgeRead.from_db(pledge)
+    return await payment_intent_service.create_payment_intent(
+        session=session,
+        user=auth.user,
+        issue=issue,
+        intent=intent,
+    )
 
 
 @router.patch(
-    "/{platform}/{org_name}/{repo_name}/issues/{number}/pledges/{pledge_id}",
-    response_model=PledgeMutationResponse,
+    "/pledges/payment_intent/{id}",
+    response_model=PledgeStripePaymentIntentMutationResponse,
 )
-async def update_pledge(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    number: int,
-    pledge_id: UUID,
-    updates: PledgeUpdate,
-    session: AsyncSession = Depends(get_db_session),
-    auth: Auth = Depends(Auth.optional_user),
-) -> PledgeMutationResponse:
-    org, repo, issue = await organization_service.get_with_repo_and_issue(
-        session=session,
-        platform=platform,
-        org_name=org_name,
-        repo_name=repo_name,
-        issue=number,
-    )
-
-    return await pledge_service.modify_pledge(
-        session=session,
-        repo=repo,
-        user=auth.user,
-        pledge_id=pledge_id,
+async def update_payment_intent(
+    id: str,
+    updates: PledgeStripePaymentIntentUpdate,
+) -> PledgeStripePaymentIntentMutationResponse:
+    return await payment_intent_service.update_payment_intent(
+        payment_intent_id=id,
         updates=updates,
     )
-
-
-@router.get(
-    "/me/pledges",
-    response_model=list[PledgeRead],
-)
-async def list_personal_pledges(
-    auth: Auth = Depends(Auth.current_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> list[PledgeRead]:
-    if not auth.user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    pledges = await pledge_service.list_by_pledging_user(session, auth.user.id)
-    return [PledgeRead.from_db(p) for p in pledges]
-
-
-@router.get(
-    "/{platform}/{org_name}/pledges",
-    response_model=list[PledgeResources],
-)
-async def list_organization_pledges(
-    platform: Platforms,
-    org_name: str,
-    auth: Auth = Depends(Auth.user_with_org_access),
-    session: AsyncSession = Depends(get_db_session),
-) -> list[PledgeResources]:
-    pledges = await pledge_service.list_by_receiving_organization(
-        session, auth.organization.id
-    )
-    return [
-        PledgeResources(
-            pledge=PledgeRead.from_db(p),
-            issue=Issue.from_db(p.issue),
-            repository=RepositorySchema.from_db(p.to_repository),
-            organization=Organization.from_db(p.to_organization),
-        )
-        for p in pledges
-    ]
 
 
 @router.post(

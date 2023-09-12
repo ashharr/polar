@@ -1,3 +1,5 @@
+'use client'
+
 import { useRequireAuth } from '@/hooks'
 import AcceptTerms from './AcceptTerms'
 

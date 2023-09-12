@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field
@@ -10,8 +11,6 @@ from polar.currency.schemas import CurrencyAmount
 from polar.issue.schemas import Issue
 from polar.kit.schemas import Schema
 from polar.models.pledge import Pledge as PledgeModel
-from polar.organization.schemas import Organization
-from polar.repository.schemas import Repository
 
 
 # Public API
@@ -152,6 +151,10 @@ class Pledge(Schema):
 # Internal APIs below
 
 
+class CreatePledgeFromPaymentIntent(Schema):
+    payment_intent_id: str
+
+
 class PledgeTransactionType(str, Enum):
     pledge = "pledge"
     transfer = "transfer"
@@ -159,28 +162,27 @@ class PledgeTransactionType(str, Enum):
     disputed = "disputed"
 
 
-class PledgeCreate(Schema):
+class PledgeStripePaymentIntentCreate(Schema):
     issue_id: UUID
-    email: str | None = None
+    email: str
     amount: int
-    pledge_as_org: UUID | None = None
+    setup_future_usage: Literal["on_session"] | None
 
 
-class PledgeUpdate(Schema):
-    email: str | None
-    amount: int | None
-    pledge_as_org: UUID | None = None
+class PledgeStripePaymentIntentUpdate(Schema):
+    email: str
+    amount: int
+    setup_future_usage: Literal["on_session"] | None
 
 
-class PledgeMutationResponse(PledgeCreate):
-    id: UUID
-    state: PledgeState
+class PledgeStripePaymentIntentMutationResponse(Schema):
+    # pledge_id: UUID
+    payment_intent_id: str
+    # state: PledgeState
+    amount: int
     fee: int
     amount_including_fee: int
     client_secret: str | None = None
-
-    class Config:
-        orm_mode = True
 
 
 class PledgeRead(Schema):
@@ -235,14 +237,3 @@ class PledgeRead(Schema):
             scheduled_payout_at=o.scheduled_payout_at,
             pledger_user_id=o.by_user_id,
         )
-
-
-class PledgeResources(Schema):
-    pledge: PledgeRead
-    issue: Issue | None
-    organization: Organization | None
-    repository: Repository | None
-
-
-class ConfirmPledgesResponse(Schema):
-    ...

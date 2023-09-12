@@ -19,8 +19,9 @@ export const metadata: Metadata = {
       'https://framerusercontent.com/images/RY34ZklhknDgQWNxaSSQDYqVBM.jpg',
     type: 'website',
     title: 'Polar - Pledge for progress',
+    siteName: 'Polar',
     description:
-      'Polar gives open source maintainers a better and funded backlog based on what drives the most impact within their community. ',
+      'Polar gives open source maintainers a better and funded backlog based on what drives the most impact within their community.',
   },
   twitter: {
     images:
@@ -28,8 +29,9 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: 'Polar - Pledge for progress',
     description:
-      'Polar gives open source maintainers a better and funded backlog based on what drives the most impact within their community. ',
+      'Polar gives open source maintainers a better and funded backlog based on what drives the most impact within their community.',
   },
+  metadataBase: new URL('https://polar.sh/'),
 }
 
 export default function RootLayout({
@@ -57,7 +59,7 @@ export default function RootLayout({
         <link href="/favicon.png" rel="icon"></link>
       </head>
 
-      <body className="dark:bg-gray-950 h-full bg-gray-50">
+      <body className="h-full bg-gray-50 dark:bg-gray-950">
         <PolarPostHogProvider>
           <PolarThemeProvider>
             <PolarQueryClientProvider>

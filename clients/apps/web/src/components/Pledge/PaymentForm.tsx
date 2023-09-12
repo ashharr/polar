@@ -1,5 +1,6 @@
 'use client'
 
+import { useAuth } from '@/hooks/auth'
 import { PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import {
   PaymentIntent,
@@ -7,18 +8,19 @@ import {
 } from '@stripe/stripe-js'
 import {
   Issue,
-  IssueRead,
   Organization,
-  PledgeMutationResponse,
+  PaymentMethod,
+  PledgeStripePaymentIntentMutationResponse,
   Repository,
 } from 'polarkit/api/client'
 import { PrimaryButton } from 'polarkit/components/ui'
-import { getCentsInDollarString } from 'polarkit/money'
 import posthog from 'posthog-js'
 import { useEffect, useState } from 'react'
+import { Checkbox } from '../ui/checkbox'
+import Subtotal from './Subtotal'
 
 const PaymentForm = ({
-  pledge,
+  paymentIntent,
   issue,
   organization,
   repository,
@@ -28,9 +30,12 @@ const PaymentForm = ({
   onSuccess,
   redirectTo,
   hasDetails,
+  paymentMethod,
+  canSavePaymentMethod,
+  onSavePaymentMethodChanged,
 }: {
-  pledge?: PledgeMutationResponse
-  issue: IssueRead | Issue
+  paymentIntent?: PledgeStripePaymentIntentMutationResponse
+  issue: Issue
   organization: Organization
   repository: Repository
   isSyncing: boolean
@@ -39,18 +44,23 @@ const PaymentForm = ({
   onSuccess: (paymentIntent: PaymentIntent) => void
   hasDetails: boolean
   redirectTo: string
+  paymentMethod?: PaymentMethod
+  canSavePaymentMethod: boolean
+  onSavePaymentMethodChanged: (save: boolean) => void
 }) => {
   const stripe = useStripe()
   const elements = useElements()
+  const { currentUser } = useAuth()
 
   const [isStripeCompleted, setStripeCompleted] = useState(false)
-  const canSubmit = !isSyncing && pledge && isStripeCompleted && hasDetails
-  const amount = pledge?.amount || 0
-  const fee = pledge?.fee || 0
-  const amountIncludingFee = pledge?.amount_including_fee || 0
+
+  const havePaymentMethod = paymentMethod || isStripeCompleted
+
+  const canSubmit =
+    !isSyncing && paymentIntent && havePaymentMethod && hasDetails
 
   useEffect(() => {
-    if (isStripeCompleted) {
+    if (havePaymentMethod) {
       posthog.capture('Pledge Form Completed', {
         'Organization ID': organization.id,
         'Organization Name': organization.name,
@@ -61,7 +71,7 @@ const PaymentForm = ({
       })
     }
   }, [
-    isStripeCompleted,
+    havePaymentMethod,
     issue.id,
     issue.number,
     organization.id,
@@ -114,16 +124,38 @@ const PaymentForm = ({
     }
   }
 
+  const submitWithExistingPaymentMethod = async () => {
+    if (!stripe || !paymentIntent?.client_secret) {
+      throw new Error('unable to submitWithExistingPaymentMethod')
+    }
+
+    return await stripe.confirmCardPayment(paymentIntent.client_secret, {
+      payment_method: paymentMethod?.stripe_payment_method_id,
+      return_url: redirectTo,
+    })
+  }
+
+  const submitWithStripeElement = async () => {
+    if (!stripe || !elements) {
+      throw new Error('unable to submitWithStripeElement')
+    }
+
+    return await stripe.confirmPayment({
+      //`Elements` instance that was used to create the Payment Element
+      elements,
+      confirmParams: {
+        return_url: redirectTo,
+      },
+      redirect: 'if_required',
+    })
+  }
+
   const onSubmit = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
 
-    if (!stripe || !elements) {
+    if (!stripe) {
       // Stripe.js has not yet loaded.
       // Make sure to disable form submission until Stripe.js has loaded.
-      return
-    }
-
-    if (!pledge) {
       return
     }
 
@@ -138,15 +170,12 @@ const PaymentForm = ({
 
     setSyncing(true)
     setErrorMessage('')
-    return await stripe
-      .confirmPayment({
-        //`Elements` instance that was used to create the Payment Element
-        elements,
-        confirmParams: {
-          return_url: redirectTo,
-        },
-        redirect: 'if_required',
-      })
+
+    const res = paymentMethod
+      ? submitWithExistingPaymentMethod()
+      : submitWithStripeElement()
+
+    return await res
       .then(({ paymentIntent, error }) => {
         if (!paymentIntent) {
           posthog.capture('Pledge Payment Failed', {
@@ -172,45 +201,59 @@ const PaymentForm = ({
       .finally(() => setSyncing(false))
   }
 
+  const [
+    stripeElementsCurrentPaymentType,
+    setStripeElementsCurrentPaymentType,
+  ] = useState('')
+
   const onStripeFormChange = (event: StripePaymentElementChangeEvent) => {
     setStripeCompleted(event.complete)
+    setStripeElementsCurrentPaymentType(event.value.type)
+
+    // Don't offer saving payment methods if the type is not card
+    if (event.value.type !== 'card') {
+      onSavePaymentMethodChanged(false)
+    }
   }
 
   return (
     <div className="mt-3 border-t pt-5">
-      <PaymentElement onChange={onStripeFormChange} />
-
-      <div className="mt-6 mb-1 flex w-full text-sm text-gray-500 dark:text-gray-400">
-        <div className="w-full">Funding amount</div>
-        <div className="w-full text-right">
-          ${getCentsInDollarString(amount, true)}
-        </div>
-      </div>
-
-      <div className="mb-1 flex w-full text-sm text-gray-500 dark:text-gray-400">
-        <div className="w-1/2 text-sm">Service fee</div>
-        <div className="w-1/2 text-right">
-          ${getCentsInDollarString(fee, true)}
-        </div>
-      </div>
-      {fee === 0 && (
-        <p className="mb-1 flex w-full text-xs text-gray-500 dark:text-gray-400">
-          Service fee (4.5%) covered by Polar.
-        </p>
-      )}
-      {fee > 0 && (
-        <p className="mb-1 flex w-full text-xs text-gray-500 dark:text-gray-400">
-          <span className="underline">Note</span>: Service fee is
-          non-refundable.
-        </p>
+      {!paymentMethod && (
+        <PaymentElement
+          onChange={onStripeFormChange}
+          options={{
+            defaultValues: {
+              billingDetails: {
+                email: currentUser?.email,
+              },
+            },
+          }}
+        />
       )}
 
-      <div className="mt-4 mb-6 flex w-full text-sm font-medium">
-        <div className="w-1/2">Total</div>
-        <div className="w-1/2 text-right">
-          ${getCentsInDollarString(amountIncludingFee, true)}
-        </div>
-      </div>
+      <Subtotal paymentIntent={paymentIntent} />
+
+      {!paymentMethod &&
+        canSavePaymentMethod &&
+        stripeElementsCurrentPaymentType === 'card' && (
+          <div className="items-top mb-2 mt-4 flex space-x-2">
+            <Checkbox
+              id="save_payment_method"
+              onCheckedChange={(e) => onSavePaymentMethodChanged(Boolean(e))}
+            />
+            <div className="grid gap-1.5 leading-none">
+              <label
+                htmlFor="save_payment_method"
+                className="text-sm font-medium text-gray-500 dark:text-gray-400"
+              >
+                Save payment method on file
+              </label>
+              <p className="text-muted-foreground text-sm">
+                Fund future issues easily. Stored securely with Stripe.
+              </p>
+            </div>
+          </div>
+        )}
 
       <div className="mt-6">
         <PrimaryButton
@@ -224,4 +267,5 @@ const PaymentForm = ({
     </div>
   )
 }
+
 export default PaymentForm

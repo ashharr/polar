@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import AsyncIterator, TypedDict
 
 import structlog
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
@@ -11,12 +11,18 @@ from starlette.routing import BaseRoute
 from polar import receivers, worker  # noqa
 from polar.api import router
 from polar.config import settings
+from polar.exception_handlers import polar_exception_handler
+from polar.exceptions import PolarError
 from polar.health.endpoints import router as health_router
-from polar.logging import configure as configure_logging
-from polar.sentry import configure_sentry
+from polar.logging import configure as configure_logging, Logger
+from polar.middlewares import LogCorrelationIdMiddleware
+from polar.posthog import configure_posthog
+from polar.sentry import configure_sentry, set_sentry_user
 from polar.tags.api import Tags
+from polar.postgres import create_engine
+from polar.kit.db.postgres import AsyncEngine
 
-log = structlog.get_logger()
+log: Logger = structlog.get_logger()
 
 
 def configure_cors(app: FastAPI) -> None:
@@ -36,19 +42,35 @@ def generate_unique_openapi_id(route: APIRoute) -> str:
     return f"{route.tags[0]}:{route.name}"
 
 
+class State(TypedDict):
+    db_engine: AsyncEngine
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
-    # Nested lifespans
-    async with worker.lifespan() as w:
-        yield
+async def lifespan(app: FastAPI) -> AsyncIterator[State]:
+    async with worker.lifespan():
+        db_engine = create_engine()
+
+        log.info("Polar API started")
+
+        yield {"db_engine": db_engine}
+
+        await db_engine.dispose()
+
+        log.info("Polar API stopped")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         generate_unique_id_function=generate_unique_openapi_id,
         lifespan=lifespan,
+        dependencies=[Depends(set_sentry_user)],
     )
     configure_cors(app)
+
+    app.add_middleware(LogCorrelationIdMiddleware)
+
+    app.add_exception_handler(PolarError, polar_exception_handler)
 
     # /healthz and /readyz
     app.include_router(health_router)
@@ -59,6 +81,7 @@ def create_app() -> FastAPI:
 
 
 configure_logging()
+configure_posthog()
 configure_sentry()
 
 log.info("Starting Polar API")

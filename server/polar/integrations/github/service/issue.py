@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
-from typing import Any, Sequence, Union
+from typing import Any, Awaitable, Literal, Sequence, Tuple, Union
+from uuid import UUID
 
 import structlog
 from githubkit import GitHub, Response
@@ -9,24 +11,35 @@ from githubkit.exception import RequestFailed
 from githubkit.rest.models import Issue as GitHubIssue
 from githubkit.rest.models import Label
 from githubkit.webhooks.models import Label as WebhookLabel
+from pydantic import parse_obj_as
 from sqlalchemy import asc, or_
 
 from polar.dashboard.schemas import IssueListType, IssueSortBy
 from polar.enums import Platforms
+from polar.exceptions import ResourceNotFound
 from polar.integrations.github import client as github
 from polar.integrations.github.service.api import github_api
 from polar.issue.hooks import IssueHook, issue_upserted
-from polar.issue.schemas import IssueCreate
+from polar.issue.schemas import IssueCreate, IssueUpdate
 from polar.issue.service import IssueService
 from polar.kit.extensions.sqlalchemy import sql
 from polar.kit.utils import utc_now
+from polar.logging import Logger
 from polar.models import Issue, Organization, Repository
 from polar.models.user import User
 from polar.postgres import AsyncSession
+from polar.redis import redis
+from polar.repository.hooks import (
+    repository_issue_synced,
+    repository_issues_sync_completed,
+)
 
 from ..badge import GithubBadge
+from .organization import github_organization
+from .paginated import ErrorCount, SyncedCount, github_paginated_service
+from .repository import github_repository
 
-log = structlog.get_logger()
+log: Logger = structlog.get_logger()
 
 
 class GithubIssueService(IssueService):
@@ -48,12 +61,14 @@ class GithubIssueService(IssueService):
         ],
         organization: Organization,
         repository: Repository,
+        autocommit: bool = True,
     ) -> Issue:
         records = await self.store_many(
             session,
             data=[data],
             organization=organization,
             repository=repository,
+            autocommit=autocommit,
         )
         return records[0]
 
@@ -72,6 +87,7 @@ class GithubIssueService(IssueService):
         ],
         organization: Organization,
         repository: Repository,
+        autocommit: bool = True,
     ) -> Sequence[Issue]:
         def parse(
             issue: Union[
@@ -82,11 +98,28 @@ class GithubIssueService(IssueService):
                 github.rest.Issue,
             ],
         ) -> IssueCreate:
-            return IssueCreate.from_github(
-                issue,
-                organization_id=organization.id,
-                repository_id=repository.id,
-            )
+            return IssueCreate.from_github(issue, organization, repository)
+
+        def filter(
+            issue: Union[
+                github.webhooks.IssuesOpenedPropIssue,
+                github.webhooks.IssuesClosedPropIssue,
+                github.webhooks.IssuesReopenedPropIssue,
+                github.webhooks.Issue,
+                github.rest.Issue,
+            ],
+        ) -> bool:
+            if issue.pull_request:
+                log.error(
+                    "refusing to save a pull_request as issue",
+                    external_id=issue.id,
+                )
+                return False
+
+            return True
+
+        # Filter out pull requests and log as errors
+        data = [d for d in data if filter(d)]
 
         schemas = [parse(issue) for issue in data]
         if not schemas:
@@ -103,6 +136,7 @@ class GithubIssueService(IssueService):
             schemas,
             constraints=[Issue.external_id],
             mutable_keys=IssueCreate.__mutable_keys__,
+            autocommit=autocommit,
         )
         for record in records:
             await issue_upserted.call(IssueHook(session, record))
@@ -241,11 +275,8 @@ class GithubIssueService(IssueService):
         installation_id = (
             crawl_with_installation_id
             if crawl_with_installation_id
-            else org.installation_id
+            else org.safe_installation_id
         )
-
-        if not installation_id:
-            raise Exception("no github installation id found")
 
         client = github.get_app_installation_client(installation_id)
 
@@ -327,7 +358,7 @@ class GithubIssueService(IssueService):
         organization: Organization,
     ) -> Sequence[Issue]:
         current_time = datetime.datetime.utcnow()
-        one_hour_ago = current_time - datetime.timedelta(hours=1)
+        cutoff_time = current_time - datetime.timedelta(hours=12)
 
         stmt = (
             sql.select(Issue)
@@ -336,7 +367,7 @@ class GithubIssueService(IssueService):
             .where(
                 or_(
                     Issue.github_issue_fetched_at.is_(None),
-                    Issue.github_issue_fetched_at < one_hour_ago,
+                    Issue.github_issue_fetched_at < cutoff_time,
                 ),
                 Issue.deleted_at.is_(None),
                 Organization.deleted_at.is_(None),
@@ -358,7 +389,7 @@ class GithubIssueService(IssueService):
         organization: Organization,
     ) -> Sequence[Issue]:
         current_time = datetime.datetime.utcnow()
-        one_hour_ago = current_time - datetime.timedelta(hours=1)
+        cutoff_time = current_time - datetime.timedelta(hours=12)
 
         stmt = (
             sql.select(Issue)
@@ -367,7 +398,7 @@ class GithubIssueService(IssueService):
             .where(
                 or_(
                     Issue.github_timeline_fetched_at.is_(None),
-                    Issue.github_timeline_fetched_at < one_hour_ago,
+                    Issue.github_timeline_fetched_at < cutoff_time,
                 ),
                 Issue.deleted_at.is_(None),
                 Organization.deleted_at.is_(None),
@@ -459,7 +490,7 @@ class GithubIssueService(IssueService):
         repository: Repository,
         issue: Issue,
     ) -> Issue:
-        client = github.get_app_installation_client(organization.installation_id)
+        client = github.get_app_installation_client(organization.safe_installation_id)
 
         labels = await client.rest.issues.async_add_labels(
             organization.name, repository.name, issue.number, data=["polar"]
@@ -476,7 +507,7 @@ class GithubIssueService(IssueService):
         repository: Repository,
         issue: Issue,
     ) -> Issue:
-        client = github.get_app_installation_client(organization.installation_id)
+        client = github.get_app_installation_client(organization.safe_installation_id)
 
         labels = await client.rest.issues.async_remove_label(
             organization.name, repository.name, issue.number, "polar"
@@ -503,6 +534,274 @@ class GithubIssueService(IssueService):
             issue.number,
             body=comment,
         )
+
+    async def sync_external_org_with_repo_and_issue(
+        self,
+        session: AsyncSession,
+        *,
+        client: GitHub[Any],
+        org_name: str,
+        repo_name: str,
+        issue_number: int,
+    ) -> Issue:
+        log.info(
+            "syncing external issue",
+            org_name=org_name,
+            repo_name=repo_name,
+            issue_number=issue_number,
+        )
+
+        issue = await self.get_by_external_lookup_key(
+            session, Platforms.github, f"{org_name}/{repo_name}/{issue_number}"
+        )
+        if issue is not None:
+            log.debug(
+                "external issue found by lookup key",
+                org_name=org_name,
+                repo_name=repo_name,
+                issue_number=issue_number,
+                external_id=issue.external_id,
+            )
+            return issue
+
+        try:
+            github_repository_response = await client.rest.repos.async_get(
+                org_name, repo_name
+            )
+        except RequestFailed as e:
+            if e.response.status_code in [404, 401]:
+                raise ResourceNotFound()
+            raise e
+
+        github_repository_data = github_repository_response.parsed_data
+
+        organization = await github_organization.create_or_update_from_github(
+            session, github_repository_data.owner
+        )
+
+        repository = await github_repository.create_or_update_from_github(
+            session, organization, github_repository_data
+        )
+
+        try:
+            issue_response = await client.rest.issues.async_get(
+                organization.name, repository.name, issue_number
+            )
+        except RequestFailed as e:
+            if e.response.status_code in [404, 401]:
+                raise ResourceNotFound()
+            raise e
+
+        github_issue_data = issue_response.parsed_data
+
+        if github_issue_data.pull_request:
+            log.info(
+                "issue is pull request, skipping",
+                org_name=org_name,
+                repo_name=repo_name,
+                issue_number=issue_number,
+                external_id=github_issue_data.id,
+            )
+            raise ResourceNotFound()
+
+        return await self.create_or_update_from_github(
+            session, organization, repository, github_issue_data
+        )
+
+    async def sync_issues(
+        self,
+        session: AsyncSession,
+        *,
+        organization: Organization,
+        repository: Repository,
+        state: Literal["open", "closed", "all"] = "open",
+        sort: Literal["created", "updated", "comments"] = "updated",
+        direction: Literal["asc", "desc"] = "desc",
+        per_page: int = 30,
+        crawl_with_installation_id: int
+        | None = None,  # Override which installation to use when crawling
+    ) -> tuple[SyncedCount, ErrorCount]:
+        # We get PRs in the issues list too, but super slim versions of them.
+        # Since we sync PRs separately, we therefore skip them here.
+        def skip_if_pr(
+            data: github.rest.Issue | github.rest.PullRequestSimple,
+        ) -> bool:
+            if isinstance(data, github.rest.PullRequestSimple):
+                return True
+            if data.pull_request:
+                return True
+            return False
+
+        installation_id = (
+            crawl_with_installation_id
+            if crawl_with_installation_id
+            else organization.safe_installation_id
+        )
+
+        client = github.get_app_installation_client(installation_id)
+
+        paginator = client.paginate(
+            client.rest.issues.async_list_for_repo,
+            owner=organization.name,
+            repo=repository.name,
+            state=state,
+            sort=sort,
+            direction=direction,
+            per_page=per_page,
+        )
+        synced, errors = await github_paginated_service.store_paginated_resource(
+            session,
+            paginator=paginator,
+            store_resource_method=github_issue.store,
+            organization=organization,
+            repository=repository,
+            skip_condition=skip_if_pr,
+            on_sync_signal=repository_issue_synced,
+            on_completed_signal=repository_issues_sync_completed,
+            resource_type="issue",
+        )
+        return (synced, errors)
+
+    async def list_issues_from_starred(
+        self,
+        session: AsyncSession,
+        user: User,
+    ) -> list[Issue]:
+        # use cached result if we have one
+        cache_key = "recommendations:" + str(user.id)
+        val = await redis.lrange(cache_key, 0, -1)
+        if val:
+            res_issues: list[Issue] = []
+            for id in val:
+                issue = await github_issue.get(session, UUID(str(id)))
+                if issue:
+                    res_issues.append(issue)
+            return res_issues
+
+        client = await github.get_user_client(session, user)
+
+        # get the latest starred repos
+        starred = (
+            await client.rest.activity.async_list_repos_starred_by_authenticated_user(
+                per_page=15
+            )
+        )
+
+        async def recommended_in_repo(
+            org: Organization, repo: Repository
+        ) -> list[Issue]:
+            issues = await client.rest.issues.async_list_for_repo(
+                org.name,
+                repo.name,
+                state="open",
+                per_page=10,
+                sort="comments",
+                direction="desc",
+            )
+
+            found = 0
+
+            by_thumbs_up = sorted(
+                issues.parsed_data,
+                key=lambda i: i.reactions.plus_one if i.reactions else 0,
+                reverse=True,
+            )
+
+            res: list[Issue] = []
+
+            for i in by_thumbs_up:
+                if i.pull_request:
+                    continue
+
+                # max 4 per repo
+                if found > 3:
+                    return res
+
+                found += 1
+
+                issue = await self.store(
+                    session,
+                    data=i,
+                    organization=org,
+                    repository=repo,
+                    # The session is shared between multiple coroutines, do not commit
+                    autocommit=False,
+                )
+
+                res.append(issue)
+
+            return res
+
+        # concurrently crawl each repository
+        jobs: list[Awaitable[list[Issue]]] = []
+
+        for r in starred.parsed_data:
+            # skip self owned repos
+            if r.owner.login == user.username:
+                continue
+            if r.private:
+                continue
+
+            org = await github_organization.create_or_update_from_github(
+                session, r.owner
+            )
+
+            repo = await github_repository.create_or_update_from_github(
+                session,
+                org,
+                r,
+            )
+
+            jobs.append(recommended_in_repo(org, repo))
+
+        # collect the results from each coroutine
+        results: list[list[Issue]] = await asyncio.gather(*jobs)
+        await session.commit()
+        res = [i for sub in results for i in sub]
+
+        # No recommendations, nothing to cache!
+        if len(res) == 0:
+            return []
+
+        # set cache
+        async with redis.pipeline() as pipe:
+            pipe.delete(cache_key)
+            pipe.rpush(cache_key, *[str(i.id) for i in res])
+            pipe.expire(cache_key, datetime.timedelta(hours=24))
+            await pipe.execute()
+
+        return res
+
+    async def create_or_update_from_github(
+        self,
+        session: AsyncSession,
+        organization: Organization,
+        repository: Repository,
+        data: GitHubIssue,
+    ) -> Issue:
+        issue = await self.get_by_external_id(session, data.id)
+
+        if not issue:
+            log.debug(
+                "issue not found by external_id, creating it",
+                external_id=data.id,
+            )
+            issue = await self.create(
+                session, IssueCreate.from_github(data, organization, repository)
+            )
+        else:
+            log.debug(
+                "issue found by external_id, updating it",
+                external_id=data.id,
+            )
+            issue = await self.update(
+                session,
+                issue,
+                IssueUpdate.from_github(data, organization, repository),
+                exclude_unset=True,
+            )
+
+        return issue
 
 
 github_issue = GithubIssueService(Issue)

@@ -1,27 +1,43 @@
-import { Issue } from 'polarkit/api/client'
+'use client'
+
+import { Issue, Visibility } from 'polarkit/api/client'
 import { IssueCard } from 'polarkit/components/pledge'
+import { Banner } from 'polarkit/components/ui'
 import { WhiteCard } from 'polarkit/components/ui/Cards'
-import { useState } from 'react'
+import posthog from 'posthog-js'
+import { useEffect, useState } from 'react'
 import Footer from '../Organization/Footer'
 import HowItWorks from './HowItWorks'
 import PledgeForm from './PledgeForm'
 
-const Pledge = ({
-  issue,
-  asOrg,
-  gotoURL,
-}: {
-  issue: Issue
-  asOrg?: string
-  gotoURL?: string
-}) => {
+const Pledge = ({ issue, gotoURL }: { issue: Issue; gotoURL?: string }) => {
   const [amount, setAmount] = useState(0)
   const onAmountChange = (amount: number) => {
     setAmount(amount)
   }
 
+  useEffect(() => {
+    if (issue) {
+      posthog.capture('Pledge page shown', {
+        'Organization ID': issue.repository.organization.id,
+        'Organization Name': issue.repository.organization.name,
+        'Repository ID': issue.repository.id,
+        'Repository Name': issue.repository.name,
+        'Issue ID': issue.id,
+        'Issue Number': issue.number,
+      })
+    }
+  }, [issue])
+
   return (
     <>
+      {issue.repository.visibility === Visibility.PRIVATE && (
+        <Banner color="muted">
+          This is an issue in a private repository. Only logged in users that
+          are members of {issue.repository.organization.name} can see it.
+        </Banner>
+      )}
+
       <div className="flex flex-col items-center ">
         <img
           src={issue.repository.organization.avatar_url}
@@ -55,10 +71,9 @@ const Pledge = ({
             />
           </div>
           <div className="text-left md:w-1/2">
-            <div className="py-5 px-3 md:px-6 ">
+            <div className="px-3 py-5 md:px-6 ">
               <PledgeForm
                 issue={issue}
-                asOrg={asOrg}
                 gotoURL={gotoURL}
                 onAmountChange={onAmountChange}
               />

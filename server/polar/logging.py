@@ -1,4 +1,5 @@
 import logging.config
+import uuid
 from typing import Any, Generic, TypeVar
 
 import structlog
@@ -6,6 +7,8 @@ import structlog
 from polar.config import settings
 
 RendererType = TypeVar("RendererType")
+
+Logger = structlog.stdlib.BoundLogger
 
 
 class Logging(Generic[RendererType]):
@@ -46,7 +49,7 @@ class Logging(Generic[RendererType]):
         logging.config.dictConfig(
             {
                 "version": 1,
-                "disable_existing_loggers": False,
+                "disable_existing_loggers": True,
                 "formatters": {
                     "polar": {
                         "()": structlog.stdlib.ProcessorFormatter,
@@ -73,7 +76,15 @@ class Logging(Generic[RendererType]):
                     "": {
                         "handlers": ["default"],
                         "level": level,
-                        "propagate": True,
+                        "propagate": False,
+                    },
+                    # Propagate third-party loggers to the root one
+                    **{
+                        logger: {
+                            "handlers": [],
+                            "propagate": True,
+                        }
+                        for logger in ["uvicorn", "sqlalchemy", "arq"]
                     },
                 },
             }
@@ -111,3 +122,7 @@ def configure() -> None:
         Development.configure()
     else:
         Production.configure()
+
+
+def generate_correlation_id() -> str:
+    return str(uuid.uuid4())

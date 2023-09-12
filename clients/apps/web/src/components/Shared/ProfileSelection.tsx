@@ -1,6 +1,9 @@
 import { useCurrentOrgAndRepoFromURL } from '@/hooks'
 import {
   ArrowRightOnRectangleIcon,
+  Cog8ToothIcon,
+  GiftIcon,
+  HeartIcon,
   PlusSmallIcon,
   QuestionMarkCircleIcon,
 } from '@heroicons/react/24/outline'
@@ -8,12 +11,10 @@ import Link from 'next/link'
 import { CONFIG } from 'polarkit/config'
 import { useListOrganizations } from 'polarkit/hooks'
 import { clsx, useOutsideClick } from 'polarkit/utils'
-import React, { useRef, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { useAuth } from '../../hooks'
 
-interface Props {}
-
-const ProfileSelection = (props: Props) => {
+const ProfileSelection = ({ useOrgFromURL = true }) => {
   const { currentUser: loggedUser, logout } = useAuth()
   const listOrganizationQuery = useListOrganizations()
 
@@ -21,13 +22,17 @@ const ProfileSelection = (props: Props) => {
 
   const orgs = listOrganizationQuery?.data?.items
 
-  const { org: currentOrg } = useCurrentOrgAndRepoFromURL()
+  const { org: currentOrgFromURL } = useCurrentOrgAndRepoFromURL()
 
   const ref = useRef(null)
 
   useOutsideClick([ref], () => {
     setOpen(false)
   })
+
+  const currentOrg = useMemo(() => {
+    return currentOrgFromURL && useOrgFromURL ? currentOrgFromURL : undefined
+  }, [currentOrgFromURL, useOrgFromURL])
 
   if (!loggedUser) {
     return <></>
@@ -48,6 +53,26 @@ const ProfileSelection = (props: Props) => {
   const showConnectUsell = orgs && orgs.length === 0
   const showAddOrganization = !showConnectUsell
 
+  const backerLinks = [
+    {
+      href: '/feed',
+      name: 'Funding',
+      icon: <HeartIcon className="h-5 w-5  text-gray-600 dark:text-gray-400" />,
+    },
+    {
+      href: '/rewards',
+      name: 'Rewards',
+      icon: <GiftIcon className="h-5 w-5  text-gray-600 dark:text-gray-400" />,
+    },
+    {
+      href: '/settings',
+      name: 'Settings',
+      icon: (
+        <Cog8ToothIcon className="h-5 w-5  text-gray-600 dark:text-gray-400" />
+      ),
+    },
+  ]
+
   return (
     <>
       <div className="flex flex-col">
@@ -67,7 +92,7 @@ const ProfileSelection = (props: Props) => {
           <div
             ref={ref}
             className={clsx(
-              'absolute top-4 right-4 min-w-[300px] overflow-hidden rounded-lg border border-transparent bg-white shadow hover:border-blue-100 dark:bg-gray-900 hover:dark:border-gray-800',
+              'absolute right-4 top-4 min-w-[300px] overflow-hidden rounded-lg border border-transparent bg-white shadow hover:border-blue-100 dark:bg-gray-900 hover:dark:border-gray-800',
             )}
           >
             <ul>
@@ -95,7 +120,7 @@ const ProfileSelection = (props: Props) => {
                 ))}
 
               {showConnectUsell && (
-                <div className="my-2 mx-4 rounded-md border border-blue-100 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900 dark:text-gray-300">
+                <div className="mx-4 my-2 rounded-md border border-blue-100 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900 dark:text-gray-300">
                   Get funding for your public repositories.
                   <br />
                   <Link
@@ -115,6 +140,16 @@ const ProfileSelection = (props: Props) => {
                   <span className="mx-1.5 text-blue-600">Add organization</span>
                 </LinkItem>
               )}
+
+              <hr className="ml-6 mr-6" />
+
+              {backerLinks.map((l) => (
+                <LinkItem href={l.href} icon={l.icon}>
+                  <span className="mx-1.5  text-gray-600 dark:text-gray-400">
+                    {l.name}
+                  </span>
+                </LinkItem>
+              ))}
 
               <hr className="ml-6 mr-6" />
 
@@ -154,7 +189,7 @@ const ListItem = (props: {
   current: boolean
 }) => {
   return (
-    <li className="animate-background duration-10 dark:hover:bg-gray-950/50 flex items-center gap-2 py-2 pl-3 pr-4 hover:bg-gray-200/50">
+    <li className="animate-background duration-10 flex items-center gap-2 py-2 pl-3 pr-4 hover:bg-gray-200/50 dark:hover:bg-gray-950/50">
       {props.current && (
         <div className="h-2 w-2 rounded-full bg-blue-600"></div>
       )}
@@ -187,12 +222,12 @@ const LinkItem = (props: {
 }) => {
   return (
     <ListItem current={false}>
-      <Link href={props.href}>
+      <a href={props.href}>
         <div className="flex items-center text-sm ">
           {props.icon}
           {props.children}
         </div>
-      </Link>
+      </a>
     </ListItem>
   )
 }

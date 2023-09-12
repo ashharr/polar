@@ -7,7 +7,6 @@ from typing import (
     AsyncGenerator,
     Awaitable,
     Callable,
-    Generator,
     ParamSpec,
     TypedDict,
     TypeVar,
@@ -25,6 +24,7 @@ from pydantic import BaseModel
 
 from polar.config import settings
 from polar.context import ExecutionContext
+from polar.logging import generate_correlation_id
 
 
 async def create_pool() -> ArqRedis:
@@ -94,6 +94,7 @@ class WorkerSettings:
     @staticmethod
     async def on_job_start(ctx: JobContext) -> None:
         structlog.contextvars.bind_contextvars(
+            correlation_id=generate_correlation_id(),
             job_id=ctx["job_id"],
             job_try=ctx["job_try"],
             enqueue_time=ctx["enqueue_time"].isoformat(),
@@ -105,7 +106,7 @@ class WorkerSettings:
     async def on_job_end(ctx: JobContext) -> None:
         log.info("polar.worker.job_ended")
         structlog.contextvars.unbind_contextvars(
-            "job_id", "job_try", "enqueue_time", "score"
+            "correlation_id", "job_id", "job_try", "enqueue_time", "score"
         )
 
 
@@ -171,7 +172,7 @@ def interval(
         f: Callable[Params, Awaitable[ReturnValue]]
     ) -> Callable[Params, Awaitable[ReturnValue]]:
         new_cron = cron(
-            f, minute=minute, second=second, run_at_startup=True  # type: ignore
+            f, minute=minute, second=second, run_at_startup=False  # type: ignore
         )
         WorkerSettings.cron_jobs.append(new_cron)
 

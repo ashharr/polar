@@ -1,25 +1,30 @@
 from __future__ import annotations
 
 import structlog
+
 from polar.exceptions import IntegrityError, ResourceNotFound
 from polar.integrations.github.client import (
     get_app_installation_client,
 )
-from polar.integrations.github.service.organization import github_organization
+from polar.integrations.github.service.issue import github_issue
+from polar.locker import Locker
+from polar.models import Issue, Organization, Repository
 from polar.models.issue_dependency import IssueDependency
-
-from polar.models import Organization, Repository, Issue
 from polar.postgres import AsyncSession, sql
 
 from .url import github_url
-
 
 log = structlog.get_logger()
 
 
 class GitHubIssueDependenciesService:
     async def sync_issue_dependencies(
-        self, session: AsyncSession, org: Organization, repo: Repository, issue: Issue
+        self,
+        session: AsyncSession,
+        locker: Locker,
+        org: Organization,
+        repo: Repository,
+        issue: Issue,
     ) -> None:
         """
         sync_issue_dependencies will look through the body of the issue and find
@@ -35,7 +40,7 @@ class GitHubIssueDependenciesService:
             )
             return
 
-        client = get_app_installation_client(org.installation_id)
+        client = get_app_installation_client(org.safe_installation_id)
         log.info(
             "github.sync_issue_dependencies",
             id=repo.id,
@@ -53,20 +58,22 @@ class GitHubIssueDependenciesService:
                 # sync it
                 continue
 
-            try:
-                (
-                    _,
-                    _,
-                    dependency_issue,
-                ) = await github_organization.sync_external_org_with_repo_and_issue(
-                    session,
-                    client=client,
-                    org_name=dependency.owner,
-                    repo_name=dependency.repo,
-                    issue_number=dependency.number,
-                )
-            except ResourceNotFound:
-                continue
+            lock_key = "sync_external_{0}_{1}_{2}".format(
+                dependency.owner, dependency.repo, dependency.number
+            )
+            async with locker.lock(lock_key, timeout=10.0, blocking_timeout=10.0):
+                try:
+                    dependency_issue = (
+                        await github_issue.sync_external_org_with_repo_and_issue(
+                            session,
+                            client=client,
+                            org_name=dependency.owner,
+                            repo_name=dependency.repo,
+                            issue_number=dependency.number,
+                        )
+                    )
+                except ResourceNotFound:
+                    continue
 
             issue_dependency = IssueDependency(
                 organization_id=org.id,

@@ -1,4 +1,4 @@
-from typing import Any, Sequence, Union
+from typing import Any, Literal, Sequence, Union
 
 import structlog
 from githubkit import GitHub
@@ -11,6 +11,7 @@ from polar.pull_request.schemas import FullPullRequestCreate, MinimalPullRequest
 from polar.pull_request.service import PullRequestService, full_pull_request
 
 from .. import client as github
+from .paginated import ErrorCount, SyncedCount, github_paginated_service
 
 log = structlog.get_logger()
 
@@ -47,9 +48,7 @@ class GithubPullRequestService(PullRequestService):
     ) -> Sequence[PullRequest]:
         def parse(pr: github.rest.PullRequestSimple) -> MinimalPullRequestCreate:
             return MinimalPullRequestCreate.minimal_pull_request_from_github(
-                pr,
-                organization_id=organization.id,
-                repository_id=repository.id,
+                pr, organization, repository
             )
 
         create_schemas = [parse(pr) for pr in data]
@@ -116,9 +115,7 @@ class GithubPullRequestService(PullRequestService):
             ],
         ) -> FullPullRequestCreate:
             return FullPullRequestCreate.full_pull_request_from_github(
-                pr,
-                organization_id=organization.id,
-                repository_id=repository.id,
+                pr, organization, repository
             )
 
         create_schemas = [parse(pr) for pr in data]
@@ -162,6 +159,46 @@ class GithubPullRequestService(PullRequestService):
         )
 
         return pull
+
+    async def sync_pull_requests(
+        self,
+        session: AsyncSession,
+        organization: Organization,
+        repository: Repository,
+        state: Literal["open", "closed", "all"] = "open",
+        sort: Literal["created", "updated", "popularity", "long-running"] = "updated",
+        direction: Literal["asc", "desc"] = "desc",
+        per_page: int = 30,
+        crawl_with_installation_id: int
+        | None = None,  # Override which installation to use when crawling
+    ) -> tuple[SyncedCount, ErrorCount]:
+        installation_id = (
+            crawl_with_installation_id
+            if crawl_with_installation_id
+            else organization.safe_installation_id
+        )
+
+        client = github.get_app_installation_client(installation_id)
+
+        paginator = client.paginate(
+            client.rest.pulls.async_list,
+            owner=organization.name,
+            repo=repository.name,
+            state=state,
+            sort=sort,
+            direction=direction,
+            per_page=per_page,
+        )
+
+        synced, errors = await github_paginated_service.store_paginated_resource(
+            session,
+            paginator=paginator,
+            store_resource_method=github_pull_request.store_simple,
+            organization=organization,
+            repository=repository,
+            resource_type="pull_request",
+        )
+        return (synced, errors)
 
 
 github_pull_request = GithubPullRequestService(PullRequest)

@@ -7,15 +7,13 @@ from polar.auth.dependencies import Auth
 from polar.authz.service import AccessType, Authz
 from polar.dashboard.schemas import IssueListType, IssueSortBy, IssueStatus
 from polar.enums import Platforms
-from polar.exceptions import ResourceNotFound
+from polar.exceptions import ResourceNotFound, Unauthorized
 from polar.integrations.github.badge import GithubBadge
 from polar.integrations.github.client import get_polar_client
 from polar.integrations.github.service.issue import github_issue as github_issue_service
-from polar.integrations.github.service.organization import (
-    github_organization as github_organization_service,
-)
 from polar.integrations.github.service.url import github_url
 from polar.kit.schemas import Schema
+from polar.locker import Locker, get_locker
 from polar.models import Issue
 from polar.organization.schemas import Organization as OrganizationSchema
 from polar.organization.service import organization as organization_service
@@ -147,7 +145,7 @@ async def search(
 @router.get(
     "/issues/lookup",
     response_model=IssueSchema,
-    tags=[Tags.INTERNAL],
+    tags=[Tags.PUBLIC],
 )
 async def lookup(
     external_url: str
@@ -156,7 +154,10 @@ async def lookup(
         description="URL to issue on external source",
         example="https://github.com/polarsource/polar/issues/897",
     ),
+    authz: Authz = Depends(Authz.authz),
+    auth: Auth = Depends(Auth.optional_user),
     session: AsyncSession = Depends(get_db_session),
+    locker: Locker = Depends(get_locker),
 ) -> IssueSchema:
     if not external_url:
         raise HTTPException(
@@ -182,9 +183,13 @@ async def lookup(
 
         client = get_polar_client()
 
-        try:
-            res = (
-                await github_organization_service.sync_external_org_with_repo_and_issue(
+        async with locker.lock(
+            f"sync_external_{url.owner}_{url.repo}_{url.number}",
+            timeout=10.0,
+            blocking_timeout=10.0,
+        ):
+            tmp_issue = (
+                await github_issue_service.sync_external_org_with_repo_and_issue(
                     session,
                     client=client,
                     org_name=url.owner,
@@ -192,27 +197,78 @@ async def lookup(
                     issue_number=url.number,
                 )
             )
-            org, repo, tmp_issue = res
-        except ResourceNotFound:
-            raise HTTPException(
-                status_code=404,
-                detail="Issue by external_url not found",
-            )
 
         # get for return
         issue = await issue_service.get_loaded(session, tmp_issue.id)
         if not issue:
-            raise HTTPException(
-                status_code=404,
-                detail="Issue not found",
-            )
+            raise ResourceNotFound("Issue not found")
+
+        if not await authz.can(auth.subject, AccessType.read, issue):
+            raise Unauthorized()
 
         return IssueSchema.from_db(issue)
 
-    raise HTTPException(
-        status_code=404,
-        detail="Issue not found",
+    raise ResourceNotFound("Issue not found")
+
+
+@router.get(
+    "/issues/for_you",
+    response_model=ListResource[IssueSchema],
+    tags=[Tags.INTERNAL],
+)
+async def for_you(
+    auth: Auth = Depends(Auth.current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> ListResource[IssueSchema]:
+    if not auth.user:
+        raise Unauthorized()
+
+    issues = await github_issue_service.list_issues_from_starred(session, auth.user)
+
+    # get loaded
+    issues = [
+        i for i in [await issue_service.get_loaded(session, i.id) for i in issues] if i
+    ]
+    items = [IssueSchema.from_db(i) for i in issues]
+
+    # sort
+    items.sort(
+        key=lambda i: i.reactions.plus_one if i.reactions else 0,
+        reverse=True,
     )
+
+    # hacky solution to spread out the repositories in the results
+    def spread(items: list[IssueSchema]) -> list[IssueSchema]:
+        penalties: dict[str, int] = {}
+        res: list[IssueSchema] = []
+
+        while len(items) > 0:
+            # In the next 5 issues, pick the one with the lowest penalty
+            lowest_penalty = 0
+            lowest: IssueSchema | None = None
+            lowest_idx = 0
+
+            for idx, candidate in enumerate(items[0:5]):
+                pen = penalties.get(candidate.repository.name, 0)
+
+                if lowest is None or pen < lowest_penalty:
+                    lowest = candidate
+                    lowest_penalty = pen
+                    lowest_idx = idx
+
+            if lowest is None:
+                break
+
+            # if lowest is not None:
+            penalties[lowest.repository.name] = lowest_penalty + 1
+            res.append(lowest)
+            del items[lowest_idx]
+
+        return res
+
+    items = spread(items)
+
+    return ListResource(items=items, pagination=Pagination(total_count=len(items)))
 
 
 @router.get(
@@ -478,27 +534,13 @@ async def get_issue_references(
     auth: Auth = Depends(Auth.user_with_org_and_repo_access),
     session: AsyncSession = Depends(get_db_session),
 ) -> Sequence[IssueReferenceRead]:
-    try:
-        _, __, issue = await organization_service.get_with_repo_and_issue(
-            session,
-            platform=platform,
-            org_name=org_name,
-            repo_name=repo_name,
-            issue=number,
-        )
-
-    except ResourceNotFound:
-        raise HTTPException(
-            status_code=404,
-            detail="Organization, repo and issue combination not found",
-        )
-
-    if not issue:
-        raise HTTPException(
-            status_code=404,
-            detail="Issue not found",
-        )
-
+    _, __, issue = await organization_service.get_with_repo_and_issue(
+        session,
+        platform=platform,
+        org_name=org_name,
+        repo_name=repo_name,
+        issue=number,
+    )
     refs = await issue_service.list_issue_references(session, issue)
     return [IssueReferenceRead.from_model(r) for r in refs]
 

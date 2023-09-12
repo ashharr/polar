@@ -70,7 +70,7 @@ const nextConfig = {
     return [
       {
         source: '/',
-        destination: '/dashboard',
+        destination: '/login/init',
         has: [
           {
             type: 'host',
@@ -103,8 +103,94 @@ const nextConfig = {
         ],
         permanent: false,
       },
+
+      {
+        source: '/dashboard',
+        destination: '/login/init',
+        permanent: false,
+      },
+
+      {
+        source: '/dashboard/settings/extension',
+        destination: '/settings/extension',
+        permanent: false,
+      },
+
+      {
+        source: '/dashboard/personal',
+        destination: '/feed',
+        permanent: false,
+      },
+      {
+        source: '/dashboard/:org(.*)/:repo(.*)',
+        destination: '/maintainer/:org/issues?repo=:repo',
+        permanent: false,
+      },
+      {
+        source: '/dashboard/:org(.*)',
+        destination: '/maintainer/:org/issues',
+        permanent: false,
+      },
+      {
+        source: '/dependencies(.*)',
+        destination: '/feed',
+        permanent: false,
+      },
+      {
+        source: '/finance(.*)',
+        destination: '/maintainer',
+        permanent: false,
+      },
+      {
+        source: '/issues(.*)',
+        destination: '/maintainer',
+        permanent: false,
+      },
+      {
+        source: '/promote(.*)',
+        destination: '/maintainer',
+        permanent: false,
+      },
     ]
   },
 }
 
 module.exports = nextConfig
+
+
+// Injected content via Sentry wizard below
+
+const { withSentryConfig } = require("@sentry/nextjs");
+
+module.exports = withSentryConfig(
+  module.exports,
+  {
+    // For all available options, see:
+    // https://github.com/getsentry/sentry-webpack-plugin#options
+
+    // Suppresses source map uploading logs during build
+    silent: true,
+
+    org: "polar-sh",
+    project: "dashboard",
+  },
+  {
+    // For all available options, see:
+    // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
+
+    // Upload a larger set of source maps for prettier stack traces (increases build time)
+    widenClientFileUpload: true,
+
+    // Transpiles SDK to be compatible with IE11 (increases bundle size)
+    transpileClientSDK: true,
+
+    // Routes browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers (increases server load)
+    tunnelRoute: "/monitoring",
+
+    // Hides source maps from generated client bundles
+    hideSourceMaps: true,
+
+    // Automatically tree-shake Sentry logger statements to reduce bundle size
+    disableLogger: true,
+  }
+);

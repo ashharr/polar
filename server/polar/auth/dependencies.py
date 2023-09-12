@@ -5,7 +5,6 @@ from fastapi import Depends, HTTPException, Request
 
 from polar.authz.service import Anonymous, Subject
 from polar.enums import Platforms
-from polar.exceptions import ResourceNotFound
 from polar.models import Organization, Repository, User
 from polar.organization.service import organization as organization_service
 from polar.postgres import AsyncSession, get_db_session
@@ -13,23 +12,18 @@ from polar.postgres import AsyncSession, get_db_session
 from .service import AuthService
 
 
-async def current_user_required(
-    request: Request,
-    session: AsyncSession = Depends(get_db_session),
-) -> User:
-    user = await AuthService.get_user_from_request(session, request=request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return user
-
-
 async def current_user_optional(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> User | None:
-    user = await AuthService.get_user_from_request(session, request=request)
-    if not user:
-        return None
+    return await AuthService.get_user_from_request(session, request=request)
+
+
+async def current_user_required(
+    user: User | None = Depends(current_user_optional),
+) -> User:
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
 
@@ -132,20 +126,14 @@ class Auth:
         session: AsyncSession = Depends(get_db_session),
         user: User = Depends(current_user_required),
     ) -> Self:
-        try:
-            org, repo = await organization_service.get_with_repo_for_user(
-                session,
-                platform=platform,
-                org_name=org_name,
-                repo_name=repo_name,
-                user_id=user.id,
-            )
-            return cls(subject=user, user=user, organization=org, repository=repo)
-        except ResourceNotFound:
-            raise HTTPException(
-                status_code=404,
-                detail="Organization/repository combination not found for user",
-            )
+        org, repo = await organization_service.get_with_repo_for_user(
+            session,
+            platform=platform,
+            org_name=org_name,
+            repo_name=repo_name,
+            user_id=user.id,
+        )
+        return cls(subject=user, user=user, organization=org, repository=repo)
 
     @classmethod
     async def backoffice_user(
