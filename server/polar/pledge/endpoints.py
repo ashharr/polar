@@ -7,6 +7,7 @@ from polar.auth.dependencies import Auth
 from polar.authz.service import AccessType, Authz
 from polar.enums import Platforms
 from polar.exceptions import ResourceNotFound, Unauthorized
+from polar.integrations.stripe.service import stripe as stripe_service
 from polar.issue.service import issue as issue_service
 from polar.organization.service import organization as organization_service
 from polar.postgres import AsyncSession, get_db_session
@@ -20,6 +21,7 @@ from polar.user_organization.service import (
 from .payment_intent_service import payment_intent_service
 from .schemas import (
     CreatePledgeFromPaymentIntent,
+    CreatePledgePayLater,
     PledgeRead,
     PledgeStripePaymentIntentCreate,
     PledgeStripePaymentIntentMutationResponse,
@@ -198,6 +200,67 @@ async def create(
         )
 
     ret = await pledge_service.get_with_loaded(session, pledge.id)
+    if not ret:
+        raise ResourceNotFound()
+
+    return PledgeSchema.from_db(ret)
+
+
+@router.post(
+    "/pledges/pay_on_completion",
+    response_model=PledgeSchema,
+    tags=[Tags.INTERNAL],
+    description="Creates a pay_on_completion type of pledge",
+    status_code=200,
+)
+async def create_pay_on_completion(
+    create: CreatePledgePayLater,
+    session: AsyncSession = Depends(get_db_session),
+    auth: Auth = Depends(Auth.current_user),
+) -> PledgeSchema:
+    if not auth.user:
+        raise Unauthorized()
+
+    pledge = await pledge_service.create_pay_on_completion(
+        session=session,
+        issue_id=create.issue_id,
+        amount=create.amount,
+        by_user_id=auth.user.id,
+    )
+
+    ret = await pledge_service.get_with_loaded(session, pledge.id)
+    if not ret:
+        raise ResourceNotFound()
+
+    return PledgeSchema.from_db(ret)
+
+
+@router.post(
+    "/pledges/{id}/create_invoice",
+    response_model=PledgeSchema,
+    tags=[Tags.INTERNAL],
+    description="Creates an invoice for pay_on_completion pledges",
+    status_code=200,
+)
+async def create_invoice(
+    id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    auth: Auth = Depends(Auth.current_user),
+    authz: Authz = Depends(Authz.authz),
+) -> PledgeSchema:
+    if not auth.user:
+        raise Unauthorized()
+
+    pledge = await pledge_service.get(session, id)
+    if not pledge:
+        raise ResourceNotFound()
+
+    if not await authz.can(auth.subject, AccessType.write, pledge):
+        raise Unauthorized()
+
+    await pledge_service.send_invoice(session, id)
+
+    ret = await pledge_service.get_with_loaded(session, id)
     if not ret:
         raise ResourceNotFound()
 

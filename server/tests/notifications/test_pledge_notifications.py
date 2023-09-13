@@ -28,6 +28,8 @@ async def test_create_pledge_from_created(
 ) -> None:
     m = mocker.patch("polar.notifications.service.NotificationsService.send_to_org")
 
+    payment_id = "xxx-1"
+
     pledge = await Pledge.create(
         session=session,
         issue_id=issue.id,
@@ -37,11 +39,11 @@ async def test_create_pledge_from_created(
         fee=123,
         by_organization_id=organization.id,
         state=PledgeState.initiated,
-        payment_id="xxx-1",
+        payment_id=payment_id,
     )
     await pledge_service.mark_created_by_payment_id(
         session,
-        pledge.payment_id,
+        payment_id,
         pledge.amount,
         "trx-id",
     )
@@ -97,6 +99,8 @@ async def test_deduplicate(
     # Check notifictions
     assert spy.call_count == 0
 
+    assert pledge.payment_id
+
     # Update to created
     await pledge_service.mark_created_by_payment_id(
         session,
@@ -105,19 +109,13 @@ async def test_deduplicate(
         "trx-id-2",
     )
 
-    errored = False
-    try:
-        await pledge_service.mark_created_by_payment_id(
-            session,
-            pledge.payment_id,
-            pledge.amount,
-            "trx-id-2",
-        )
-    except Exception as e:
-        assert e is not None
-        errored = True
-
-    assert errored is True
+    # do it again, (should not do anything)
+    await pledge_service.mark_created_by_payment_id(
+        session,
+        pledge.payment_id,
+        pledge.amount,
+        "trx-id-2",
+    )
 
     # Check notifictions
     assert spy.call_count == 1

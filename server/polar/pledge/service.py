@@ -13,8 +13,15 @@ from sqlalchemy.orm import (
 
 from polar.account.service import account as account_service
 from polar.config import settings
-from polar.exceptions import NotPermitted, ResourceNotFound
+from polar.exceptions import (
+    InternalServerError,
+    NotPermitted,
+    ResourceNotFound,
+    StripeError,
+)
 from polar.integrations.github.service.user import github_user as github_user_service
+from polar.integrations.stripe.schemas import PaymentIntentSuccessWebhook
+from polar.integrations.stripe.service import stripe as stripe_service
 from polar.issue.schemas import ConfirmIssueSplit
 from polar.issue.service import issue as issue_service
 from polar.kit.hook import Hook
@@ -44,6 +51,7 @@ from polar.notifications.service import (
 from polar.organization.service import organization as organization_service
 from polar.postgres import AsyncSession, sql
 from polar.repository.service import repository as repository_service
+from polar.user.service import user as user_service
 
 from .hooks import (
     PledgeHook,
@@ -54,6 +62,7 @@ from .hooks import (
 from .schemas import (
     PledgeState,
     PledgeTransactionType,
+    PledgeType,
 )
 
 log = structlog.get_logger()
@@ -202,6 +211,7 @@ class PledgeService(ResourceServiceReader[Pledge]):
         get = sql.select(Pledge).where(
             Pledge.issue_id == issue_id,
             Pledge.state.in_(from_states),
+            Pledge.type == PledgeType.pay_upfront,
         )
 
         res = await session.execute(get)
@@ -350,6 +360,7 @@ class PledgeService(ResourceServiceReader[Pledge]):
             .where(
                 Pledge.id == pledge_id,
                 Pledge.state.in_(PledgeState.to_pending_states()),
+                Pledge.type == PledgeType.pay_upfront,
             )
             .values(
                 state=PledgeState.pending,
@@ -486,23 +497,121 @@ class PledgeService(ResourceServiceReader[Pledge]):
 
         return created_splits
 
+    async def handle_payment_intent_success(
+        self,
+        session: AsyncSession,
+        payload: PaymentIntentSuccessWebhook,
+    ) -> None:
+        pledge = await self.get_by_payment_id(session, payload.id)
+        if not pledge:
+            raise ResourceNotFound(f"Pledge not found with payment_id: {payload.id}")
+
+        log.info(
+            "handle_payment_intent_success",
+            payment_id=payload.id,
+        )
+
+        # Log Transaction
+        session.add(
+            PledgeTransaction(
+                pledge_id=pledge.id,
+                type=PledgeTransactionType.pledge,
+                amount=payload.amount_received,
+                transaction_id=payload.latest_charge,
+            )
+        )
+        await session.commit()
+
+        if pledge.type == PledgeType.pay_upfront:
+            return await self.mark_created_by_payment_id(
+                session,
+                payment_id=payload.id,
+                amount_received=payload.amount_received,
+                transaction_id=payload.latest_charge,
+            )
+
+        if pledge.type == PledgeType.pay_on_completion:
+            return await self.handle_paid_invoice(
+                session,
+                payment_id=payload.id,
+                amount_received=payload.amount_received,
+                transaction_id=payload.latest_charge,
+            )
+
+        raise Exception(f"unhandeled pledge type type: {pledge.type}")
+
     async def mark_created_by_payment_id(
-        self, session: AsyncSession, payment_id: str, amount: int, transaction_id: str
+        self,
+        session: AsyncSession,
+        payment_id: str,
+        amount_received: int,
+        transaction_id: str,
     ) -> None:
         pledge = await self.get_by_payment_id(session, payment_id)
         if not pledge:
             raise ResourceNotFound(f"Pledge not found with payment_id: {payment_id}")
 
+        # Already in the expected state
+        if pledge.state == PledgeState.created:
+            return None
+
         if pledge.state not in PledgeState.to_created_states():
             raise Exception(f"pledge is in unexpected state: {pledge.state}")
 
-        pledge.state = PledgeState.created
-        session.add(pledge)
+        if pledge.type != PledgeType.pay_upfront:
+            raise Exception(f"pledge is of unexpected type: {pledge.type}")
+
+        stmt = (
+            sql.Update(Pledge)
+            .where(
+                Pledge.id == pledge.id,
+                Pledge.state.in_(PledgeState.to_created_states()),
+            )
+            .values(
+                state=PledgeState.created,
+                amount_received=amount_received,
+            )
+        )
+        await session.execute(stmt)
+        await session.commit()
+        await pledge_created.call(PledgeHook(session, pledge))
+
+    async def handle_paid_invoice(
+        self,
+        session: AsyncSession,
+        payment_id: str,
+        amount_received: int,
+        transaction_id: str,
+    ) -> None:
+        pledge = await self.get_by_payment_id(session, payment_id)
+        if not pledge:
+            raise ResourceNotFound(f"Pledge not found with payment_id: {payment_id}")
+
+        if pledge.state not in PledgeState.to_pending_states():
+            raise Exception(f"pledge is in unexpected state: {pledge.state}")
+
+        if pledge.type != PledgeType.pay_on_completion:
+            raise Exception(f"pledge is of unexpected type: {pledge.type}")
+
+        stmt = (
+            sql.Update(Pledge)
+            .where(
+                Pledge.id == pledge.id,
+                Pledge.state.in_(PledgeState.to_pending_states()),
+            )
+            .values(
+                state=PledgeState.pending,
+                amount_received=amount_received,
+                transaction_id=transaction_id,
+            )
+        )
+        await session.execute(stmt)
+
         session.add(
             PledgeTransaction(
                 pledge_id=pledge.id,
                 type=PledgeTransactionType.pledge,
-                amount=amount,
+                amount=amount_received,
                 transaction_id=transaction_id,
             )
         )
@@ -771,6 +880,93 @@ class PledgeService(ResourceServiceReader[Pledge]):
 
         await pledge_disputed.call(PledgeHook(session, pledge))
         await pledge_updated.call(PledgeHook(session, pledge))
+
+    async def create_pay_on_completion(
+        self,
+        session: AsyncSession,
+        issue_id: UUID,
+        by_user_id: UUID,
+        amount: int,
+    ) -> Pledge:
+        issue = await issue_service.get(session, issue_id)
+        if not issue:
+            raise ResourceNotFound("Issue Not Found")
+
+        pledge = await Pledge.create(
+            session=session,
+            issue_id=issue.id,
+            repository_id=issue.repository_id,
+            organization_id=issue.organization_id,
+            amount=amount,
+            fee=0,
+            state=PledgeState.created,
+            type=PledgeType.pay_on_completion,
+            by_user_id=by_user_id,
+        )
+
+        await pledge_created.call(PledgeHook(session, pledge))
+
+        return pledge
+
+    async def send_invoice(
+        self,
+        session: AsyncSession,
+        pledge_id: UUID,
+    ) -> None:
+        pledge = await self.get(session, pledge_id)
+        if not pledge:
+            raise ResourceNotFound()
+
+        if pledge.invoice_id:
+            raise NotPermitted("this pledge already has an invoice")
+        if pledge.type != PledgeType.pay_on_completion:
+            raise NotPermitted("this pledge is not of type pay_on_completion")
+        if not pledge.by_user_id:
+            raise NotPermitted("this pledge is not made by a user")
+
+        pledge_issue = await issue_service.get(session, pledge.issue_id)
+        if not pledge_issue:
+            raise ResourceNotFound()
+
+        pledge_issue_repo = await repository_service.get(
+            session, pledge_issue.repository_id
+        )
+        if not pledge_issue_repo:
+            raise ResourceNotFound()
+
+        pledge_issue_org = await organization_service.get(
+            session, pledge_issue.organization_id
+        )
+        if not pledge_issue_org:
+            raise ResourceNotFound()
+
+        pledger_user = await user_service.get(session, pledge.by_user_id)
+        if not pledger_user:
+            raise ResourceNotFound()
+
+        invoice = await stripe_service.create_pledge_invoice(
+            session=session,
+            user=pledger_user,
+            pledge=pledge,
+            pledge_issue=pledge_issue,
+            pledge_issue_repo=pledge_issue_repo,
+            pledge_issue_org=pledge_issue_org,
+        )
+        if not invoice:
+            raise InternalServerError()
+
+        stmt = (
+            sql.Update(Pledge)
+            .where(Pledge.id == pledge_id)
+            .values(
+                payment_id=invoice.payment_intent,
+                invoice_id=invoice.id,
+                invoice_hosted_url=invoice.hosted_invoice_url,
+            )
+        )
+        await session.execute(stmt)
+        await session.commit()
+        return None
 
     def user_can_admin_sender_pledge(
         self, user: User, pledge: Pledge, memberships: Sequence[UserOrganization]

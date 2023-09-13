@@ -10,7 +10,8 @@ from polar.models.issue import Issue
 from polar.models.pledge import Pledge
 from polar.models.user import User
 from polar.organization.service import organization as organization_service
-from polar.postgres import AsyncSession, sql
+from polar.pledge.hooks import PledgeHook, pledge_created
+from polar.postgres import AsyncSession
 from polar.repository.service import repository as repository_service
 
 from .schemas import (
@@ -18,6 +19,7 @@ from .schemas import (
     PledgeStripePaymentIntentCreate,
     PledgeStripePaymentIntentMutationResponse,
     PledgeStripePaymentIntentUpdate,
+    PledgeType,
 )
 from .service import pledge as pledge_service
 
@@ -168,7 +170,7 @@ class PaymentIntentService:
             else PledgeState.initiated
         )
 
-        return await Pledge.create(
+        pledge = await Pledge.create(
             session=session,
             payment_id=payment_intent_id,
             issue_id=issue.id,
@@ -178,9 +180,15 @@ class PaymentIntentService:
             amount=amount,
             fee=0,
             state=state,
+            type=PledgeType.pay_upfront,
             by_user_id=user_id,
             by_organization_id=None,
         )
+
+        if state == PledgeState.created:
+            await pledge_created.call(PledgeHook(session, pledge))
+
+        return pledge
 
     @classmethod
     def calculate_fee(cls, amount: int) -> int:
