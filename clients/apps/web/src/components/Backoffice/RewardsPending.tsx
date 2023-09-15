@@ -4,11 +4,12 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ArrowTopRightOnSquareIcon,
+  BanknotesIcon,
   CurrencyDollarIcon,
 } from '@heroicons/react/20/solid'
 import Link from 'next/link'
-import { api } from 'polarkit/api'
-import { BackofficeReward, PledgeState } from 'polarkit/api/client'
+import { api, queryClient } from 'polarkit/api'
+import { BackofficeReward, PledgeState, PledgeType } from 'polarkit/api/client'
 import { ThinButton } from 'polarkit/components/ui'
 import { useBackofficeRewardsPending } from 'polarkit/hooks'
 import { getCentsInDollarString } from 'polarkit/money'
@@ -62,6 +63,11 @@ const Pledges = () => {
     // return Object.values(byIssue)
   }, [rewards])
 
+  const onClickCreateInvoice = async (pledgeID: string) => {
+    await api.backoffice.pledgeCreateInvoice({ pledgeId: pledgeID })
+    queryClient.invalidateQueries({ queryKey: ['useBackofficeRewards'] })
+  }
+
   return (
     <div className="space-y-4">
       {issueList.map((i) => (
@@ -77,6 +83,26 @@ const Pledges = () => {
             </Link>
 
             <span>&quot;{i[0][0].pledge.issue.title}&quot;</span>
+
+            {i[0][0].pledge.issue.confirmed_solved_at ? (
+              <div className="flex items-center rounded-full  bg-green-400 px-2 text-sm text-white">
+                confirmed solved
+              </div>
+            ) : (
+              <div className="flex items-center rounded-full  bg-orange-400 px-2 text-sm text-white">
+                not confirmed solved
+              </div>
+            )}
+
+            {i[0][0].pledge.issue.needs_confirmation_solved ? (
+              <div className="flex items-center rounded-full  bg-green-400 px-2 text-sm text-white">
+                awaiting confirmation
+              </div>
+            ) : (
+              <div className="flex items-center rounded-full  bg-orange-400 px-2 text-sm text-white">
+                not awaiting confirmation
+              </div>
+            )}
 
             <ThinButton
               color="gray"
@@ -125,16 +151,44 @@ const Pledges = () => {
                       p[0].pledge.state === PledgeState.PENDING
                         ? 'bg-green-700'
                         : '',
-                      p[0].pledge.state === PledgeState.CONFIRMATION_PENDING
-                        ? 'bg-blue-700'
-                        : '',
                       p[0].pledge.state === PledgeState.CREATED
                         ? 'bg-blue-300'
                         : '',
                     )}
                   >
-                    {p[0].pledge.state}
+                    state={p[0].pledge.state}
                   </div>
+                  <div
+                    className={classNames(
+                      'flex items-center rounded-full px-2 text-sm text-white',
+                      p[0].pledge.type === PledgeType.PAY_UPFRONT
+                        ? 'bg-green-700'
+                        : '',
+                      p[0].pledge.type === PledgeType.PAY_ON_COMPLETION
+                        ? 'bg-red-700'
+                        : '',
+                    )}
+                  >
+                    type={p[0].pledge.type}
+                  </div>
+                  {p[0].pledge.hosted_invoice_url ? (
+                    <ThinButton
+                      color="gray"
+                      href={p[0].pledge.hosted_invoice_url}
+                    >
+                      <span>Open Invoice</span>
+                      <ArrowTopRightOnSquareIcon />
+                    </ThinButton>
+                  ) : (
+                    <ThinButton
+                      color="gray"
+                      onClick={() => onClickCreateInvoice(p[0].pledge.id)}
+                    >
+                      <span>Send Invoice</span>
+                      <BanknotesIcon />
+                    </ThinButton>
+                  )}
+
                   <ThinButton
                     color="gray"
                     href={`https://dashboard.stripe.com/payments/${p[0].pledge_payment_id}`}

@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react'
 
 import OpenGraphImage from '@/components/Organization/OpenGraphImage'
-import { issueRead, org } from './testdata'
+import { Reactions } from 'polarkit/api/client'
+import { issue, org } from './testdata'
 
 const meta: Meta<typeof OpenGraphImage> = {
   title: 'Organisms/OpenGraphImage',
@@ -20,7 +21,7 @@ export const Default: Story = {
     org_name: org.name,
     issue_count: 15,
     avatar: org.avatar_url,
-    issues: [issueRead, issueRead],
+    issues: [issue, issue],
   },
   render: (args) => {
     return (
@@ -37,14 +38,14 @@ export const IssueToday: Story = {
     issue_count: 15,
     avatar: org.avatar_url,
     issues: [
-      { ...issueRead, issue_created_at: new Date().toString() },
+      { ...issue, issue_created_at: new Date().toString() },
       {
-        ...issueRead,
+        ...issue,
         issue_created_at: new Date(
           new Date().getTime() - 60 * 60 * 24 * 1000,
         ).toString(),
         reactions: {
-          ...issueRead.reactions,
+          ...(issue.reactions as Reactions),
           plus_one: 0,
         },
       },
@@ -66,11 +67,11 @@ export const IssueLongTitle: Story = {
     avatar: org.avatar_url,
     issues: [
       {
-        ...issueRead,
+        ...issue,
         title:
           'Lorem ipsum dolor sit amet: Lorem ipsum Lorem ipsum Lorem ipsum Lorem ipsum',
       },
-      issueRead,
+      issue,
     ],
   },
   render: (args) => {
@@ -90,11 +91,11 @@ export const Repository: Story = {
     avatar: org.avatar_url,
     issues: [
       {
-        ...issueRead,
+        ...issue,
         title:
           'Lorem ipsum dolor sit amet: Lorem ipsum Lorem ipsum Lorem ipsum Lorem ipsum',
       },
-      issueRead,
+      issue,
     ],
   },
   render: (args) => {
@@ -114,11 +115,11 @@ export const RepositoryLongName: Story = {
     avatar: org.avatar_url,
     issues: [
       {
-        ...issueRead,
+        ...issue,
         title:
           'Lorem ipsum dolor sit amet: Lorem ipsum Lorem ipsum Lorem ipsum Lorem ipsum',
       },
-      issueRead,
+      issue,
     ],
   },
   render: (args) => {
@@ -135,8 +136,7 @@ export const OneIssue: Story = {
     org_name: org.name,
     issue_count: 1,
     avatar: org.avatar_url,
-    // issues: IssuePublicRead[],
-    issues: [issueRead],
+    issues: [issue],
   },
   render: (args) => {
     return (
@@ -184,7 +184,7 @@ export const LargeIssue: Story = {
     org_name: org.name,
     issue_count: 0,
     avatar: org.avatar_url,
-    issues: [issueRead],
+    issues: [issue],
     largeIssue: true,
   },
   render: (args) => {
@@ -211,9 +211,9 @@ export const LargeIssueNoReactions: Story = {
     avatar: org.avatar_url,
     issues: [
       {
-        ...issueRead,
+        ...issue,
         reactions: {
-          ...issueRead.reactions,
+          ...(issue.reactions as Reactions),
           plus_one: 0,
         },
       },

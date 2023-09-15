@@ -29,11 +29,8 @@ from polar.user_organization.service import (
 
 from .schemas import (
     ConfirmIssue,
-    IssuePublicRead,
-    IssueRead,
     IssueReferenceRead,
     IssueUpdateBadgeMessage,
-    OrganizationPublicPageRead,
     PostIssueComment,
     UpdateIssue,
 )
@@ -430,24 +427,6 @@ async def confirm(
 #
 
 
-@router.get(
-    "/{platform}/{org_name}/{repo_name}/issues",
-    response_model=list[IssueRead],
-    tags=[Tags.INTERNAL],
-)
-async def get_repository_issues(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str,
-    auth: Auth = Depends(Auth.user_with_org_and_repo_access),
-    session: AsyncSession = Depends(get_db_session),
-) -> Sequence[Issue]:
-    issues = await issue_service.list_by_repository(
-        session=session, repository_id=auth.repository.id
-    )
-    return issues
-
-
 @router.post(
     "/{platform}/{org_name}/{repo_name}/issue/{issue_number}/add_badge",
     response_model=IssueSchema,
@@ -547,7 +526,7 @@ async def get_issue_references(
 
 @router.post(
     "/{platform}/{org_name}/{repo_name}/issue/{issue_number}/comment",
-    response_model=IssueRead,
+    response_model=IssueSchema,
     tags=[Tags.INTERNAL],
 )
 async def add_issue_comment(
@@ -558,7 +537,7 @@ async def add_issue_comment(
     comment: PostIssueComment,
     auth: Auth = Depends(Auth.user_with_org_and_repo_access),
     session: AsyncSession = Depends(get_db_session),
-) -> Issue:
+) -> IssueSchema:
     issue = await issue_service.get_by_number(
         session, platform, auth.organization.id, auth.repository.id, issue_number
     )
@@ -595,12 +574,20 @@ async def add_issue_comment(
         message,
     )
 
-    return issue
+    # get for return
+    issue_ret = await issue_service.get_loaded(session, issue.id)
+    if not issue_ret:
+        raise HTTPException(
+            status_code=404,
+            detail="Issue not found",
+        )
+
+    return IssueSchema.from_db(issue_ret)
 
 
 @router.post(
     "/{platform}/{org_name}/{repo_name}/issue/{issue_number}/badge_message",
-    response_model=IssueRead,
+    response_model=IssueSchema,
     tags=[Tags.INTERNAL],
 )
 async def badge_with_message(
@@ -611,7 +598,7 @@ async def badge_with_message(
     badge_message: IssueUpdateBadgeMessage,
     auth: Auth = Depends(Auth.user_with_org_and_repo_access),
     session: AsyncSession = Depends(get_db_session),
-) -> Issue:
+) -> IssueSchema:
     issue = await issue_service.get_by_number(
         session, platform, auth.organization.id, auth.repository.id, issue_number
     )
@@ -633,77 +620,12 @@ async def badge_with_message(
         triggered_from_label=True,
     )
 
-    return issue
-
-
-@router.get(
-    "/{platform}/{org_name}/public",
-    response_model=OrganizationPublicPageRead,
-    tags=[Tags.INTERNAL],
-    summary="Get organization public issues (Internal API)",
-)
-async def get_public_issues(
-    platform: Platforms,
-    org_name: str,
-    repo_name: str | None = None,
-    session: AsyncSession = Depends(get_db_session),
-) -> OrganizationPublicPageRead:
-    org = await organization_service.get_by_name(session, platform, org_name)
-    if not org:
+    # get for return
+    issue_ret = await issue_service.get_loaded(session, issue.id)
+    if not issue_ret:
         raise HTTPException(
             status_code=404,
-            detail="Organization not found",
+            detail="Issue not found",
         )
 
-    all_org_repos = await repository_service.list_by(
-        session,
-        org_ids=[org.id],
-        load_organization=True,
-    )
-    all_org_repos = [
-        r for r in all_org_repos if r.is_private is False and r.is_archived is False
-    ]
-
-    if repo_name:
-        repo = await repository_service.get_by(
-            session,
-            organization_id=org.id,
-            name=repo_name,
-            is_private=False,
-            is_archived=False,
-            deleted_at=None,
-        )
-
-        if not repo:
-            raise HTTPException(
-                status_code=404,
-                detail="Repository not found",
-            )
-
-        issues_in_repos = [repo]
-    else:
-        issues_in_repos = all_org_repos
-
-    issues_in_repos_ids = [r.id for r in issues_in_repos]
-
-    (issues, count) = await issue_service.list_by_repository_type_and_status(
-        session=session,
-        repository_ids=issues_in_repos_ids,
-        issue_list_type=IssueListType.issues,
-        sort_by=IssueSortBy.issues_default,
-        limit=50,
-        have_polar_badge=True,
-        include_statuses=[
-            IssueStatus.backlog,
-            IssueStatus.triaged,
-            IssueStatus.in_progress,
-            IssueStatus.pull_request,
-        ],
-    )
-
-    return OrganizationPublicPageRead(
-        organization=OrganizationSchema.from_db(org),
-        repositories=[RepositorySchema.from_db(r) for r in all_org_repos],
-        issues=[IssuePublicRead.from_orm(i) for i in issues],
-        total_issue_count=count,
-    )
+    return IssueSchema.from_db(issue_ret)

@@ -1,5 +1,7 @@
 import {
   Funding,
+  Issue,
+  IssueDashboardRead,
   IssueReferenceRead,
   Pledge,
   PledgeRead,
@@ -38,6 +40,7 @@ const IssueListItemDecoration = ({
   confirmPledgeIsLoading,
   funding,
   showSelfPledgesFor,
+  issue,
 }: {
   orgName: string
   repoName: string
@@ -46,15 +49,12 @@ const IssueListItemDecoration = ({
   references: IssueReferenceRead[]
   showDisputeAction: boolean
   onDispute: (pledge: PledgeRead | Pledge) => void
-  onConfirmPledges: (
-    orgName: string,
-    repoName: string,
-    issueNumber: number,
-  ) => Promise<void>
+  onConfirmPledges: () => void
   showConfirmPledgeAction: boolean
   confirmPledgeIsLoading: boolean
   funding: Funding
   showSelfPledgesFor?: UserRead
+  issue: IssueDashboardRead | Issue
 }) => {
   const showPledges = pledges && pledges.length > 0
 
@@ -136,6 +136,7 @@ const IssueListItemDecoration = ({
         {showPledges && (
           <div className="stretch mr-4 flex-none">
             <IssuePledge
+              issue={issue}
               orgName={orgName}
               repoName={repoName}
               issueNumber={issueNumber}
@@ -209,7 +210,7 @@ const IssueListItemDecoration = ({
                 {'authed_user_can_admin_sender' in p &&
                   p.authed_user_can_admin_sender && (
                     <span className="text-sm text-gray-500">
-                      You've disputed your pledge{' '}
+                      You&apos;ve disputed your pledge{' '}
                       {disputeBoxShowAmount && (
                         <>(${getCentsInDollarString(p.amount)})</>
                       )}

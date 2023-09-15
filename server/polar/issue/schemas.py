@@ -82,6 +82,14 @@ class Issue(Schema):
     issue_modified_at: datetime | None
     issue_created_at: datetime
 
+    needs_confirmation_solved: bool = Field(
+        description="If a maintainer needs to mark this issue as solved"
+    )
+
+    confirmed_solved_at: datetime | None = Field(
+        description="If this issue has been marked as confirmed solved through Polar"
+    )
+
     funding: Funding
 
     repository: Repository = Field(description="The repository that the issue is in")
@@ -116,6 +124,8 @@ class Issue(Schema):
             issue_closed_at=i.issue_closed_at,
             issue_modified_at=i.issue_modified_at,
             issue_created_at=i.issue_created_at,
+            needs_confirmation_solved=i.needs_confirmation_solved,
+            confirmed_solved_at=i.confirmed_solved_at,
             reactions=parse_obj_as(Reactions, i.reactions) if i.reactions else None,
             funding=funding,
             repository=Repository.from_db(i.repository),
@@ -492,36 +502,3 @@ class PostIssueComment(Schema):
 
 class IssueUpdateBadgeMessage(Schema):
     message: str
-
-
-class IssuePublicRead(Schema):
-    id: UUID
-    platform: Platforms
-    organization_id: UUID
-    repository_id: UUID
-    number: int
-    title: str
-    # author: JSONAny
-    labels: JSONAny
-    # closed_by: JSONAny
-    reactions: JSONAny
-    state: IssueModel.State
-    # state_reason: str | None
-    issue_closed_at: datetime | None
-    issue_modified_at: datetime | None
-    issue_created_at: datetime
-    comments: int | None
-    progress: IssueStatus | None = None
-    # badge_custom_content: str | None = None
-    funding_goal: int | None
-
-    class Config:
-        orm_mode = True
-
-
-# Internal model
-class OrganizationPublicPageRead(Schema):
-    organization: Organization
-    repositories: list[Repository]
-    issues: list[IssuePublicRead]
-    total_issue_count: int

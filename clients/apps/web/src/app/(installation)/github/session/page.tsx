@@ -6,20 +6,26 @@ import LoadingScreen, {
 } from '@/components/Dashboard/LoadingScreen'
 import { useAuth } from '@/hooks'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { ApiError } from 'polarkit/api'
+import { useEffect, useRef, useState } from 'react'
 
 export default function Page() {
   const router = useRouter()
 
   const search = useSearchParams()
-
   const code = search?.get('code')
   const state = search?.get('state')
 
   const session = useAuth()
+  const loading = useRef(false)
   const [error, setError] = useState<string | null>(null)
 
   const exchange = async (code: string, state: string) => {
+    if (loading.current) {
+      return
+    }
+
+    loading.current = true
     try {
       const response = await api.integrations.githubCallback({
         code: code,
@@ -40,7 +46,14 @@ export default function Page() {
         setError('Invalid response')
       }
     } catch (err) {
-      setError('Something went wrong exchanging the OAuth code for a cookie')
+      let errorMessage =
+        'Something went wrong exchanging the OAuth code for a cookie'
+      if (err instanceof ApiError && err.body.detail) {
+        errorMessage = err.body.detail
+      }
+      setError(errorMessage)
+    } finally {
+      loading.current = false
     }
   }
 
@@ -52,13 +65,6 @@ export default function Page() {
       setError('Cannot authenticate without an OAuth code and state')
     }
   }, [])
-
-  useEffect(() => {
-    // This user is already authenticated
-    if (session.authenticated) {
-      router.push('/login/init')
-    }
-  }, [session.authenticated])
 
   if (error) {
     return (

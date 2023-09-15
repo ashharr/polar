@@ -1,5 +1,7 @@
 import {
   Funding,
+  Issue,
+  IssueDashboardRead,
   Pledge,
   PledgeRead,
   PledgeState,
@@ -14,15 +16,12 @@ interface Props {
   repoName: string
   issueNumber: number
   pledges: Array<PledgeRead | Pledge>
-  onConfirmPledges: (
-    orgName: string,
-    repoName: string,
-    issueNumber: number,
-  ) => Promise<void>
+  onConfirmPledges: () => void
   showConfirmPledgeAction: boolean
   confirmPledgeIsLoading: boolean
   funding: Funding
   showSelfPledgesFor?: UserRead
+  issue: IssueDashboardRead | Issue
 }
 
 const IssuePledge = (props: Props) => {
@@ -34,6 +33,7 @@ const IssuePledge = (props: Props) => {
     showConfirmPledgeAction,
     confirmPledgeIsLoading,
     showSelfPledgesFor,
+    issue,
   } = props
 
   const addAmounts = (accumulator: number, pledge: Pledge | PledgeRead) => {
@@ -45,20 +45,17 @@ const IssuePledge = (props: Props) => {
 
   const totalPledgeAmount = pledges.reduce(addAmounts, 0)
 
-  const confirmPledges = async () => {
-    await props.onConfirmPledges(orgName, repoName, issueNumber)
-  }
-
   const confirmable = useMemo(() => {
     return (
       pledges.some(
         (p) =>
           'authed_user_can_admin_received' in p &&
-          p.state === PledgeState.CONFIRMATION_PENDING &&
+          'needs_confirmation_solved' in issue &&
+          issue.needs_confirmation_solved &&
           p.authed_user_can_admin_received,
       ) && !confirmPledgeIsLoading
     )
-  }, [pledges, confirmPledgeIsLoading])
+  }, [pledges, confirmPledgeIsLoading, issue])
 
   const isConfirmed = useMemo(() => {
     return (
@@ -172,7 +169,9 @@ const IssuePledge = (props: Props) => {
                 Loading...
               </span>
             )}
-            {confirmable && <IssueConfirmButton onClick={confirmPledges} />}
+            {confirmable && (
+              <IssueConfirmButton onClick={props.onConfirmPledges} />
+            )}
           </>
         )}
       </div>
