@@ -92,7 +92,7 @@ const BadgeMessageForm = (props: {
       <div
         className={classNames(
           props.innerClassNames,
-          'rounded-xl bg-white py-3.5 px-5 dark:bg-gray-800 dark:ring-1 dark:ring-gray-600',
+          'rounded-xl bg-white px-5 py-3.5 dark:bg-gray-800 dark:ring-1 dark:ring-gray-600',
         )}
       >
         {descriptionMode === 'View' && (
@@ -102,6 +102,7 @@ const BadgeMessageForm = (props: {
               showAmountRaised={props.showAmountRaised}
               darkmode={resolvedTheme === 'dark'}
               funding={funding}
+              avatarsUrls={[]}
             />
           </>
         )}

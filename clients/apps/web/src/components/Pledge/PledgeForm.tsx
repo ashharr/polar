@@ -3,8 +3,8 @@ import {
   ClockIcon,
   CurrencyDollarIcon,
   EnvelopeIcon,
-  GiftIcon,
 } from '@heroicons/react/24/outline'
+import { CommandLineIcon, HeartIcon } from '@heroicons/react/24/solid'
 import { Elements } from '@stripe/react-stripe-js'
 import { PaymentIntent } from '@stripe/stripe-js'
 import { loadStripe } from '@stripe/stripe-js/pure'
@@ -34,8 +34,10 @@ import {
   SelectValue,
 } from '../ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
+import Contribute from './Contribute'
+import FundOnCompletion from './FundOnCompletion'
 import PaymentForm from './PaymentForm'
-import { prettyCardName } from './payment'
+import { prettyCardName, validateEmail } from './payment'
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_KEY || '')
 
@@ -50,6 +52,7 @@ type PledgeSync = {
 const generateRedirectURL = (
   gotoURL?: string,
   paymentIntent?: PaymentIntent,
+  email?: string,
 ) => {
   const redirectURL = new URL(
     window.location.origin + window.location.pathname + '/status',
@@ -57,6 +60,10 @@ const generateRedirectURL = (
 
   if (gotoURL) {
     redirectURL.searchParams.append('goto_url', gotoURL)
+  }
+
+  if (email) {
+    redirectURL.searchParams.append('email', email)
   }
 
   // Only in case we pass our redirect to Stripe which in turn will add it
@@ -88,11 +95,80 @@ const PledgeForm = ({
   gotoURL?: string
   onAmountChange?: (amount: number) => void
 }) => {
-  const showFundingMethodTabs = false
-
   return (
     <>
       <form className="flex flex-col">
+        <label
+          htmlFor="action"
+          className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
+        >
+          I want to&hellip;
+        </label>
+
+        <Tabs defaultValue="fund" className="">
+          <TabsList
+            className={twMerge(
+              'grid h-fit w-full grid-cols-2 grid-rows-1 dark:bg-gray-700',
+            )}
+          >
+            <TabsTrigger
+              value="fund"
+              className="text-gray-500 data-[state=active]:text-red-600 dark:text-gray-300 dark:data-[state=active]:text-red-600"
+            >
+              <div className="flex w-full items-center justify-center  gap-4 px-1 text-left">
+                <HeartIcon className="h-6 w-6" />
+                <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Fund
+                </div>
+              </div>
+            </TabsTrigger>
+
+            <TabsTrigger
+              value="contribute"
+              className="data-[state=active]:text-gray-600 dark:text-gray-300 dark:data-[state=active]:text-green-400"
+            >
+              <div className="flex w-full items-center justify-center  gap-4 px-1 text-left">
+                <CommandLineIcon className="h-6 w-6 " />
+                <div>
+                  <div className='font-medium" text-sm text-gray-700 dark:text-gray-300'>
+                    Contribute
+                  </div>
+                </div>
+              </div>
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="fund">
+            <Fund
+              issue={issue}
+              gotoURL={gotoURL}
+              onAmountChange={onAmountChangeProp}
+            />
+          </TabsContent>
+          <TabsContent value="contribute">
+            <Contribute issue={issue} />
+          </TabsContent>
+        </Tabs>
+      </form>
+    </>
+  )
+}
+
+export default PledgeForm
+
+const Fund = ({
+  issue,
+  gotoURL,
+  onAmountChange: onAmountChangeProp,
+}: {
+  issue: Issue
+  gotoURL?: string
+  onAmountChange?: (amount: number) => void
+}) => {
+  const showFundingMethodTabs = false
+
+  return (
+    <div className="space-y-4 py-4">
+      <div className={twMerge(showFundingMethodTabs ? '' : '-mt-4')}>
         {showFundingMethodTabs && (
           <label
             htmlFor="funding_method"
@@ -105,27 +181,25 @@ const PledgeForm = ({
         <Tabs defaultValue="fund_today" className="">
           <TabsList
             className={twMerge(
-              'grid h-fit w-full grid-cols-1 grid-rows-3',
+              'grid h-fit w-full grid-cols-1 grid-rows-2 dark:bg-gray-700',
               showFundingMethodTabs ? '' : 'hidden',
             )}
           >
             <FundingMethodTab
               value="fund_today"
-              icon={<CurrencyDollarIcon className="h-6 w-6 text-gray-600" />}
+              icon={
+                <CurrencyDollarIcon className="h-6 w-6 text-gray-600 dark:text-gray-300" />
+              }
               title="Fund today"
               subtitle="Paid today. Held by Polar until completion."
             />
             <FundingMethodTab
               value="fund_on_completion"
-              icon={<ClockIcon className="h-6 w-6 text-gray-600" />}
+              icon={
+                <ClockIcon className="h-6 w-6 text-gray-600 dark:text-gray-300" />
+              }
               title="Fund on completion"
               subtitle="Get an invoice when the issue is completed."
-            />
-            <FundingMethodTab
-              value="gift_today"
-              icon={<GiftIcon className="h-6 w-6 text-gray-600" />}
-              title="Gift today"
-              subtitle="No strings attached. A gift & vote in one."
             />
           </TabsList>
           <TabsContent value="fund_today">
@@ -138,25 +212,23 @@ const PledgeForm = ({
           <TabsContent value="fund_on_completion">
             <FundOnCompletion issue={issue} gotoURL={gotoURL} />
           </TabsContent>
-          <TabsContent value="gift_today">gift_today</TabsContent>
         </Tabs>
+      </div>
 
-        <p className="mt-5 text-sm text-gray-600">
-          By funding this issue, you agree to our{' '}
-          <Link href="https://polar.sh/legal/terms" className="underline">
-            Terms of Service
-          </Link>{' '}
-          and understand our{' '}
-          <Link href="https://polar.sh/legal/privacy" className="underline">
-            Privacy Policy
-          </Link>
-          .
-        </p>
-      </form>
-    </>
+      <p className="text-sm text-gray-600">
+        By funding this issue, you agree to our{' '}
+        <Link href="https://polar.sh/legal/terms" className="underline">
+          Terms of Service
+        </Link>{' '}
+        and understand our{' '}
+        <Link href="https://polar.sh/legal/privacy" className="underline">
+          Privacy Policy
+        </Link>
+        .
+      </p>
+    </div>
   )
 }
-export default PledgeForm
 
 const FundingMethodTab = ({
   value,
@@ -173,16 +245,16 @@ const FundingMethodTab = ({
     <div className="flex w-full items-center gap-4 px-1 text-left">
       {icon}
       <div>
-        <div className='font-medium" text-sm text-gray-700'>{title}</div>
-        <div className="text-xs font-normal text-gray-600">{subtitle}</div>
+        <div className='font-medium" text-sm text-gray-700 dark:text-gray-300'>
+          {title}
+        </div>
+        <div className="text-xs font-normal text-gray-600 dark:text-gray-400">
+          {subtitle}
+        </div>
       </div>
     </div>
   </TabsTrigger>
 )
-
-const validateEmail = (email: string) => {
-  return email.includes('@')
-}
 
 const FundToday = ({
   issue,
@@ -415,7 +487,7 @@ const FundToday = ({
       throw new Error('got payment success but no pledge')
     }
 
-    const location = generateRedirectURL(gotoURL, paymentIntent)
+    const location = generateRedirectURL(gotoURL, paymentIntent, email)
     router.push(location)
   }
 
@@ -465,67 +537,71 @@ const FundToday = ({
   }, [savedPaymentMethods.isFetched, savedPaymentMethods.data])
 
   return (
-    <div className="flex flex-col">
-      <label
-        htmlFor="amount"
-        className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
-      >
-        Funding amount
-      </label>
-      <div className="flex flex-row items-center space-x-4">
-        <MoneyInput
-          id="amount"
-          name="amount"
-          onChange={onAmountChange}
-          onBlur={onAmountChange}
-          placeholder={organization.pledge_minimum_amount}
-          value={amount}
-          onFocus={(event) => {
-            event.target.select()
-          }}
-        />
-        <p
-          className={classNames(
-            amount < organization.pledge_minimum_amount ? 'text-red-500' : '',
-            'w-2/5 text-xs text-gray-500 dark:text-gray-400',
-          )}
+    <div className="flex flex-col space-y-4">
+      <div>
+        <label
+          htmlFor="amount"
+          className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
         >
-          Minimum is $
-          {getCentsInDollarString(organization.pledge_minimum_amount)}
-        </p>
+          Funding amount
+        </label>
+        <div className="flex flex-row items-center space-x-4">
+          <MoneyInput
+            id="amount"
+            name="amount"
+            onChange={onAmountChange}
+            onBlur={onAmountChange}
+            placeholder={organization.pledge_minimum_amount}
+            value={amount}
+            onFocus={(event) => {
+              event.target.select()
+            }}
+          />
+          <p
+            className={classNames(
+              amount < organization.pledge_minimum_amount ? 'text-red-500' : '',
+              'w-2/5 text-xs text-gray-500 dark:text-gray-400',
+            )}
+          >
+            Minimum is $
+            {getCentsInDollarString(organization.pledge_minimum_amount)}
+          </p>
+        </div>
       </div>
 
-      <label
-        htmlFor="email"
-        className="mb-2 mt-4 text-sm font-medium text-gray-500 dark:text-gray-400"
-      >
-        Contact details
-      </label>
-      <div className="relative">
-        <input
-          type="email"
-          id="email"
-          onChange={onEmailChange}
-          onBlur={onEmailChange}
-          value={email}
-          className="block w-full rounded-lg border-gray-200 bg-transparent px-3 py-2.5 pl-10 text-sm shadow-sm focus:z-10 focus:border-blue-300 focus:ring-[3px] focus:ring-blue-100 dark:border-gray-600 dark:focus:border-blue-600 dark:focus:ring-blue-700/40"
-          onFocus={(event) => {
-            event.target.select()
-          }}
-        />
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-20 flex items-center pl-3 text-lg">
-          <span className="text-gray-500">
-            <EnvelopeIcon className="h-6 w-6" />
-          </span>
+      <div>
+        <label
+          htmlFor="email"
+          className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
+        >
+          Contact details
+        </label>
+        <div className="relative">
+          <input
+            type="email"
+            id="email"
+            onChange={onEmailChange}
+            onBlur={onEmailChange}
+            value={email}
+            className="block w-full rounded-lg border-gray-200 bg-transparent px-3 py-2.5 pl-10 text-sm shadow-sm focus:z-10 focus:border-blue-300 focus:ring-[3px] focus:ring-blue-100 dark:border-gray-600 dark:focus:border-blue-600 dark:focus:ring-blue-700/40"
+            onFocus={(event) => {
+              event.target.select()
+            }}
+          />
+          <div className="pointer-events-none absolute inset-y-0 left-0 z-20 flex items-center pl-3 text-lg">
+            <span className="text-gray-500">
+              <EnvelopeIcon className="h-6 w-6" />
+            </span>
+          </div>
         </div>
       </div>
 
       {savedPaymentMethods.data?.items &&
         savedPaymentMethods.data?.items?.length > 0 && (
-          <>
+          <div>
             <label
               htmlFor="payment_method"
-              className="mb-2 mt-4 text-sm font-medium text-gray-500 dark:text-gray-400"
+              className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
             >
               Payment method
             </label>
@@ -556,7 +632,7 @@ const FundToday = ({
                 <SelectItem value="new">+ New payment method</SelectItem>
               </SelectContent>
             </Select>
-          </>
+          </div>
         )}
 
       {showStripeForm && polarPaymentIntent && (
@@ -632,145 +708,6 @@ const FundToday = ({
           </PrimaryButton>
         </div>
       )}
-
-      {errorMessage && (
-        <div className="mt-3.5 text-red-500 dark:text-red-400">
-          {errorMessage}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const FundOnCompletion = ({
-  issue,
-  gotoURL,
-}: {
-  issue: Issue
-  gotoURL?: string
-}) => {
-  const organization = issue.repository.organization
-  const [amount, setAmount] = useState<number>(
-    issue.repository.organization.pledge_minimum_amount,
-  )
-  const [email, setEmail] = useState('')
-  const [errorMessage, setErrorMessage] = useState<string>('')
-
-  const { currentUser } = useAuth()
-
-  const router = useRouter()
-
-  const onAmountChange = (event: ChangeEvent<HTMLInputElement>) => {
-    let newAmount = parseInt(event.target.value)
-    if (isNaN(newAmount)) {
-      newAmount = 0
-    }
-    const amountInCents = newAmount * 100
-    setAmount(amountInCents)
-  }
-
-  const didFirstUserEmailSync = useRef(false)
-  useEffect(() => {
-    if (currentUser && currentUser.email && !didFirstUserEmailSync.current) {
-      didFirstUserEmailSync.current = true
-      setEmail(currentUser.email)
-    }
-  }, [currentUser])
-
-  const [isLoading, setIsLoading] = useState(false)
-
-  const hasValidDetails =
-    validateEmail(email) &&
-    amount >= issue.repository.organization.pledge_minimum_amount
-
-  const submit = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    event.stopPropagation()
-
-    setIsLoading(true)
-    setErrorMessage('')
-    try {
-      await api.pledges.createPayOnCompletion({
-        requestBody: {
-          issue_id: issue.id,
-          amount: amount,
-        },
-      })
-
-      router.push('/feed')
-    } catch (e) {
-      setErrorMessage('Something went wrong, please try again.')
-      setIsLoading(false)
-    }
-  }
-
-  if (!currentUser) {
-    return <div>TODO: you need to login!</div>
-  }
-
-  return (
-    <div className="flex flex-col">
-      <label
-        htmlFor="amount"
-        className="mb-2 text-sm font-medium text-gray-500 dark:text-gray-400"
-      >
-        Funding amount
-      </label>
-      <div className="flex flex-row items-center space-x-4">
-        <MoneyInput
-          id="amount"
-          name="amount"
-          onChange={onAmountChange}
-          placeholder={organization.pledge_minimum_amount}
-          value={amount}
-          onFocus={(event) => {
-            event.target.select()
-          }}
-        />
-        <p
-          className={classNames(
-            amount < organization.pledge_minimum_amount ? 'text-red-500' : '',
-            'w-2/5 text-xs text-gray-500 dark:text-gray-400',
-          )}
-        >
-          Minimum is $
-          {getCentsInDollarString(organization.pledge_minimum_amount)}
-        </p>
-      </div>
-
-      <label
-        htmlFor="email"
-        className="mb-2 mt-4 text-sm font-medium text-gray-500 dark:text-gray-400"
-      >
-        Contact details
-      </label>
-      <div className="relative">
-        <input
-          type="email"
-          id="email"
-          onChange={(e) => setEmail(e.target.value)}
-          value={email}
-          className="block w-full rounded-lg border-gray-200 bg-transparent px-3 py-2.5 pl-10 text-sm shadow-sm focus:z-10 focus:border-blue-300 focus:ring-[3px] focus:ring-blue-100 dark:border-gray-600 dark:focus:border-blue-600 dark:focus:ring-blue-700/40"
-          onFocus={(event) => {
-            event.target.select()
-          }}
-        />
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-20 flex items-center pl-3 text-lg">
-          <span className="text-gray-500">
-            <EnvelopeIcon className="h-6 w-6" />
-          </span>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <PrimaryButton
-          disabled={!hasValidDetails}
-          loading={isLoading}
-          onClick={submit}
-        >
-          Fund this issue
-        </PrimaryButton>
-      </div>
 
       {errorMessage && (
         <div className="mt-3.5 text-red-500 dark:text-red-400">

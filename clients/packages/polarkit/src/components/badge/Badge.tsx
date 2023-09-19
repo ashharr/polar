@@ -19,11 +19,13 @@ export const Badge = ({
   // amountRaised = undefined,
   darkmode = false,
   funding = undefined,
+  avatarsUrls = [],
 }: {
   showAmountRaised?: boolean
   // amountRaised?: string
   darkmode: boolean
   funding?: Funding
+  avatarsUrls: string[]
 }) => {
   const showFundingGoal =
     funding &&
@@ -42,6 +44,12 @@ export const Badge = ({
           1, // Min 1
         )
       : 0
+
+  const showAvatars =
+    avatarsUrls.length > 4 ? avatarsUrls.slice(0, 3) : avatarsUrls
+  const extraAvatarsCount = avatarsUrls.length - showAvatars.length
+
+  const title = showFundingGoal || showAmount ? 'Fund' : 'Fund this issue'
 
   return (
     <>
@@ -85,7 +93,7 @@ export const Badge = ({
               flexShrink: '0',
             }}
           >
-            Fund this issue
+            {title}
           </div>
 
           {showAmount && funding?.pledges_sum?.amount !== undefined && (
@@ -138,6 +146,7 @@ export const Badge = ({
                 style={{
                   display: 'flex',
                   flexDirection: 'column',
+                  overflow: 'hidden',
                   marginRight: 12,
                   marginLeft: 6,
                   fontSize: 12,
@@ -210,6 +219,56 @@ export const Badge = ({
                 </div>
               </div>
             )}
+
+          {showAvatars.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                marginRight: '8px',
+                overflow: 'hidden',
+                height: '22px',
+                flexWrap: 'wrap',
+              }}
+            >
+              {showAvatars.map((url, idx) => (
+                <img
+                  key={idx}
+                  src={url}
+                  style={{
+                    height: 22,
+                    width: 22,
+                    borderRadius: 22,
+                    border: darkmode ? '1px solid #3E3F43' : '1px solid white',
+                    marginLeft: idx > 0 ? '-6px' : '',
+                    flexShrink: '0',
+                  }}
+                />
+              ))}
+
+              {extraAvatarsCount > 0 && (
+                <div
+                  style={{
+                    backgroundColor: darkmode ? '#2e4070' : '#C9DBF4',
+                    color: darkmode ? '#a6c7ea' : '#4667CA',
+                    height: 22,
+                    width: 22,
+                    borderRadius: 22,
+                    marginLeft: '-6px',
+                    textAlign: 'center',
+                    fontSize: '8px',
+                    lineHeight: '20px',
+                    border: darkmode ? '1px solid #3E3F43' : '1px solid white',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-around',
+                    flexShrink: '0',
+                  }}
+                >
+                  <span>+{extraAvatarsCount}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           <div
             style={{
