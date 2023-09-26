@@ -19,6 +19,7 @@ from polar.organization.schemas import OrganizationCreate
 from polar.postgres import AsyncSession
 from polar.repository.schemas import RepositoryCreate
 from polar.worker import JobContext, PolarWorkerContext
+from tests.fixtures import random_objects
 from tests.fixtures.webhook import TestWebhook, TestWebhookFactory
 
 
@@ -756,9 +757,9 @@ async def test_webhook_opened_with_label(
 
     assert issue.labels is not None
     assert isinstance(issue.labels, list)
-    assert issue.labels[0]["name"] == "polar"
+    assert issue.labels[0]["name"] == "Fund"
 
-    assert issue.contains_pledge_badge_label(issue.labels) is True
+    assert issue.contains_pledge_badge_label(issue.labels, "Fund") is True
     assert issue.has_pledge_badge_label is True
 
     embed_mock.assert_called_once_with(
@@ -818,9 +819,9 @@ async def test_webhook_labeled_remove_badge_body(
 
     assert issue.labels is not None
     assert isinstance(issue.labels, list)
-    assert issue.labels[0]["name"] == "polar"
+    assert issue.labels[0]["name"] == "Fund"
 
-    assert issue.contains_pledge_badge_label(issue.labels) is True
+    assert issue.contains_pledge_badge_label(issue.labels, "Fund") is True
     assert issue.has_pledge_badge_label is True
 
     # add badge
@@ -850,8 +851,8 @@ async def test_webhook_labeled_remove_badge_body(
     assert issue is not None
     assert issue.labels is not None
     assert isinstance(issue.labels, list)
-    assert issue.labels[0]["name"] == "polar"
-    assert issue.contains_pledge_badge_label(issue.labels) is True
+    assert issue.labels[0]["name"] == "Fund"
+    assert issue.contains_pledge_badge_label(issue.labels, "Fund") is True
 
     # assert badge is added again
 
@@ -862,3 +863,113 @@ async def test_webhook_labeled_remove_badge_body(
         issue=ANY,
         triggered_from_label=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_webhook_organization_renamed(
+    job_context: JobContext,
+    mocker: MockerFixture,
+    session: AsyncSession,
+    github_webhook: TestWebhookFactory,
+    organization: Organization,
+) -> None:
+    # Capture and prevent any calls to enqueue_job
+    mocker.patch("polar.worker._enqueue_job")
+
+    hook = github_webhook.create("organization.renamed")
+    hook["organization"]["id"] = organization.external_id
+
+    await webhook_tasks.organizations_renamed(
+        job_context,
+        "organization",
+        "renamed",
+        hook.json,
+        polar_context=PolarWorkerContext(),
+    )
+
+    updated_organization = await service.github_organization.get_by_external_id(
+        session, organization.external_id
+    )
+    assert updated_organization is not None
+    assert updated_organization.name == hook["organization"]["login"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_repository_transferred(
+    job_context: JobContext,
+    mocker: MockerFixture,
+    session: AsyncSession,
+    github_webhook: TestWebhookFactory,
+    repository: Repository,
+) -> None:
+    # Capture and prevent any calls to enqueue_job
+    mocker.patch("polar.worker._enqueue_job")
+
+    new_organization = await random_objects.create_organization(session)
+
+    hook = github_webhook.create("repository.transferred")
+    hook["repository"]["id"] = repository.external_id
+    hook["repository"]["owner"]["id"] = new_organization.external_id
+
+    await webhook_tasks.repositories_transferred(
+        job_context,
+        "repository",
+        "transferred",
+        hook.json,
+        polar_context=PolarWorkerContext(),
+    )
+
+    updated_repository = await service.github_repository.get_by_external_id(
+        session, repository.external_id
+    )
+    assert updated_repository is not None
+    assert updated_repository.organization_id == new_organization.id
+
+
+@pytest.mark.asyncio
+async def test_webhook_issue_transferred(
+    job_context: JobContext,
+    mocker: MockerFixture,
+    session: AsyncSession,
+    github_webhook: TestWebhookFactory,
+    organization: Organization,
+) -> None:
+    # Capture and prevent any calls to enqueue_job
+    mocker.patch("polar.worker._enqueue_job")
+
+    old_repository = await random_objects.create_repository(
+        session, organization, is_private=False
+    )
+    old_issue = await random_objects.create_issue(session, organization, old_repository)
+    old_issue.funding_goal = 10_000
+
+    new_repository = await random_objects.create_repository(
+        session, organization, is_private=False
+    )
+    new_issue = await random_objects.create_issue(session, organization, new_repository)
+
+    hook = github_webhook.create("issues.transferred")
+    hook["issue"]["id"] = old_issue.external_id
+    hook["changes"]["new_issue"]["id"] = new_issue.external_id
+    hook["changes"]["new_repository"]["id"] = new_repository.external_id
+    hook["changes"]["new_repository"]["owner"]["id"] = organization.external_id
+
+    await webhook_tasks.issue_transferred(
+        job_context,
+        "issues",
+        "transferred",
+        hook.json,
+        polar_context=PolarWorkerContext(),
+    )
+
+    updated_new_issue = await service.github_issue.get_by_external_id(
+        session, new_issue.external_id
+    )
+    assert updated_new_issue is not None
+    assert updated_new_issue.funding_goal == 10_000
+
+    updated_old_issue = await service.github_issue.get_by_external_id(
+        session, old_issue.external_id
+    )
+    assert updated_old_issue is not None
+    assert updated_old_issue.deleted_at is not None

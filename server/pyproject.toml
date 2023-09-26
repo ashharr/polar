@@ -15,10 +15,10 @@ alembic = "^1.9.2"
 sqlalchemy = { extras = ["asyncio"], version = "^2.0.20" }
 greenlet = "^2.0.2"                                        # Need to be explicit, M1 Mac issue (https://github.com/python-poetry/poetry/issues/5429)
 structlog = "^22.3.0"
-# githubkit = {extras = ["auth-app"], version = "^0.10.6"}
+# Temp githubkit fix. See https://github.com/polarsource/polar/issues/1241
 githubkit = { extras = [
     "auth-app",
-], git = "https://github.com/polarsource/githubkit.git", rev = "198345c0cab3159347a1f984f9e73b0597808df8" }
+], git = "https://github.com/polarsource/githubkit.git", rev = "a89b25d624aa701c8d097770f5f3d7d930aafdbf" }
 redis = "^5.0.0"
 sse-starlette = "^1.4.0"
 arq = "^0.25.0"
@@ -49,7 +49,7 @@ sqlalchemy-utils = "^0.40.0"
 ruff = "^0.0.284"
 pytest-asyncio = "^0.20.3"
 taskipy = "^1.10.3"
-types-redis = "4.6.0.5"
+types-redis = "4.6.0.6"
 pytest-subtests = "^0.10.0"
 types-stripe = "^3.5.2.14"
 pytest-recording = "^0.12.2"

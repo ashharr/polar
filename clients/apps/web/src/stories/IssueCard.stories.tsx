@@ -1,13 +1,15 @@
 import type { Meta, StoryObj } from '@storybook/react'
 
 import { IssueCard } from 'polarkit/components/pledge'
-import { issue } from './testdata'
+import { issue, issueBodyHTML, pledger } from './testdata'
 
 const meta: Meta<typeof IssueCard> = {
   title: 'Organisms/IssueCard',
   component: IssueCard,
   args: {
     issue: issue,
+    htmlBody: issueBodyHTML,
+    pledgers: [pledger],
   },
   tags: ['autodocs'],
 }
@@ -72,5 +74,32 @@ export const FundingGoalPlusCurrent: Story = {
       },
     },
     currentPledgeAmount: 800,
+  },
+}
+
+export const UpfrontSplit: Story = {
+  ...Default,
+  args: {
+    ...Default.args,
+    issue: {
+      ...issue,
+      upfront_split_to_contributors: 75,
+    },
+  },
+}
+
+export const LongAuthorName: Story = {
+  ...Default,
+  args: {
+    ...Default.args,
+    issue: {
+      ...issue,
+      author: issue.author
+        ? {
+            ...issue.author,
+            login: 'ASuperLongUsername',
+          }
+        : undefined,
+    },
   },
 }

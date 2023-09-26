@@ -81,7 +81,7 @@ async def test_get_pledge_not_member(
         cookies={settings.AUTH_COOKIE_KEY: auth_jwt},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -150,7 +150,7 @@ async def test_search_pledge_no_member(
     )
 
     assert response.status_code == 200
-    assert len(response.json()["items"]) == 1
+    assert len(response.json()["items"]) == 0
 
 
 @pytest.mark.asyncio
@@ -276,3 +276,54 @@ async def test_create_pay_on_completion(
     # assert len(pledge["hosted_invoice_url"]) > 5
     # assert response.json() == {"detail": "No search criteria specified"}
     # assert False
+
+
+@pytest.mark.asyncio
+async def test_summary(
+    repository: Repository,
+    pledge: Pledge,
+    client: AsyncClient,
+    session: AsyncSession,
+) -> None:
+    repository.is_private = False
+    await repository.save(session)
+
+    response = await client.get(
+        f"/api/v1/pledges/summary?issue_id={pledge.issue_id}",
+    )
+
+    print(response.json())
+    assert response.status_code == 200
+    assert response.json() == {
+        "funding": {
+            "funding_goal": None,
+            "pledges_sum": {"amount": pledge.amount, "currency": "USD"},
+        },
+        "pledges": [
+            {
+                "pledger": {
+                    "avatar_url": "https://avatars.githubusercontent.com/u/105373340?s=200&v=4",
+                    "github_username": pledge.by_organization.name,
+                    "name": pledge.by_organization.name,
+                },
+                "type": "pay_upfront",
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_summary_private_repo(
+    repository: Repository,
+    pledge: Pledge,
+    client: AsyncClient,
+    session: AsyncSession,
+) -> None:
+    repository.is_private = True
+    await repository.save(session)
+
+    response = await client.get(
+        f"/api/v1/pledges/summary?issue_id={pledge.issue_id}",
+    )
+
+    assert response.status_code == 401

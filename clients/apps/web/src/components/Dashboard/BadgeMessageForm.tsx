@@ -2,12 +2,15 @@ import { Marked } from '@ts-stack/markdown'
 import { useTheme } from 'next-themes'
 import { CurrencyAmount, Funding } from 'polarkit/api/client'
 import { Badge } from 'polarkit/components/badge'
-import { LabeledRadioButton, MoneyInput } from 'polarkit/components/ui'
+import {
+  LabeledRadioButton,
+  MoneyInput,
+  PrimaryButton,
+} from 'polarkit/components/ui'
 import { classNames } from 'polarkit/utils'
 import { ChangeEvent, MouseEvent, useEffect, useRef, useState } from 'react'
 
 const BadgeMessageForm = (props: {
-  orgName: string
   value: string
   onUpdateMessage: (comment: string) => Promise<void> // when "update" is clicked
   onUpdateFundingGoal: (amount: CurrencyAmount) => Promise<void> // when "update" is clicked
@@ -19,18 +22,21 @@ const BadgeMessageForm = (props: {
   canSetFundingGoal: boolean
   funding: Funding
 }) => {
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(props.value)
 
   const [descriptionMode, setDescirptionMode] = useState('View')
 
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (ref.current) {
-      ref.current.innerHTML = Marked.parse(props.value)
-    }
     setMessage(props.value)
-  }, [ref, props.value, descriptionMode])
+  }, [props.value])
+
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.innerHTML = Marked.parse(message)
+    }
+  }, [ref, message, descriptionMode])
 
   const [canSave, setCanSave] = useState(false)
 
@@ -80,9 +86,7 @@ const BadgeMessageForm = (props: {
   return (
     <div className="flex flex-col space-y-3">
       <div className="text-gray flex items-center justify-between">
-        <div className="text-sm font-medium">
-          Markdown added to the end of the issue description
-        </div>
+        <div className="text-sm font-medium">Customize embed</div>
         <LabeledRadioButton
           values={['View', 'Edit']}
           value={descriptionMode}
@@ -117,7 +121,7 @@ const BadgeMessageForm = (props: {
           </>
         )}
       </div>
-      <div className="flex justify-between">
+      <div className="flex items-center justify-between">
         {/* <div className="text-gray-600">
           Template variables: <code>{'{badge}'}</code>, <code>{'{repo}'}</code>
         </div> */}
@@ -141,19 +145,15 @@ const BadgeMessageForm = (props: {
 
         <div className="flex-1"></div>
         {props.showUpdateButton && (
-          <button
-            onClick={onClickUpdate}
-            disabled={!canSave}
-            className={classNames(
-              isLoading ? 'cursor-wait' : '',
-              canSave
-                ? 'cursor-pointer text-blue-600 dark:text-blue-500'
-                : 'text-gray-400 dark:text-gray-500',
-              'text-sm font-medium',
-            )}
-          >
-            Update
-          </button>
+          <div>
+            <PrimaryButton
+              onClick={onClickUpdate}
+              disabled={!canSave}
+              fullWidth={false}
+            >
+              Update
+            </PrimaryButton>
+          </div>
         )}
       </div>
     </div>

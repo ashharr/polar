@@ -2,6 +2,7 @@
 /* tslint:disable */
 /* eslint-disable */
 
+import type { Author } from './Author';
 import type { Funding } from './Funding';
 import type { Label } from './Label';
 import type { Platforms } from './Platforms';
@@ -32,6 +33,10 @@ export type Issue = {
   comments?: number;
   labels?: Array<Label>;
   /**
+   * GitHub author
+   */
+  author?: Author;
+  /**
    * Github reactions
    */
   reactions?: Reactions;
@@ -52,6 +57,10 @@ export type Issue = {
    * The repository that the issue is in
    */
   repository: Repository;
+  /**
+   * Share of rewrads that will be rewarded to contributors of this issue. A number between 0 and 100 (inclusive).
+   */
+  upfront_split_to_contributors?: number;
 };
 
 export namespace Issue {

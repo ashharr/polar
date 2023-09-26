@@ -33,8 +33,8 @@ const meta: Meta<typeof BadgePromotionModal> = {
   component: BadgePromotionModal,
   tags: ['autodocs'],
   args: {
-    repoName: repo.name,
-    orgName: org.name,
+    repo: repo,
+    org: org,
     issue: dashboardIssue,
     isShown: true,
     toggle: () => {},
@@ -64,5 +64,33 @@ export const FundingGoal: Story = {
         pledges_sum: { currency: 'USD', amount: 8000 },
       },
     },
+  },
+}
+
+export const Rewards: Story = {
+  ...Default,
+  args: {
+    ...Default.args,
+    defaultTab: 'rewards',
+  },
+}
+
+export const RewardsWithSplit: Story = {
+  ...Default,
+  args: {
+    ...Default.args,
+    defaultTab: 'rewards',
+    issue: {
+      ...dashboardIssue,
+      upfront_split_to_contributors: 70,
+    },
+  },
+}
+
+export const Promote: Story = {
+  ...Default,
+  args: {
+    ...Default.args,
+    defaultTab: 'promote',
   },
 }

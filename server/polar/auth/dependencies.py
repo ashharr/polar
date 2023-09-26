@@ -1,9 +1,11 @@
-from typing import Self
+from typing import Annotated, Self
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from polar.authz.service import Anonymous, Subject
+from polar.config import settings
 from polar.enums import Platforms
 from polar.models import Organization, Repository, User
 from polar.organization.service import organization as organization_service
@@ -11,12 +13,29 @@ from polar.postgres import AsyncSession, get_db_session
 
 from .service import AuthService
 
+personal_access_token_scheme = HTTPBearer(
+    auto_error=False,
+    description="You can generate a **Personal Access Token** from your [settings](https://polar.sh/settings/tokens).",
+)
+
+
+async def get_cookie_token(request: Request) -> str | None:
+    return request.cookies.get(settings.AUTH_COOKIE_KEY)
+
 
 async def current_user_optional(
-    request: Request,
+    cookie_token: str | None = Depends(get_cookie_token),
+    personal_access_token: HTTPAuthorizationCredentials
+    | None = Depends(personal_access_token_scheme),
     session: AsyncSession = Depends(get_db_session),
 ) -> User | None:
-    return await AuthService.get_user_from_request(session, request=request)
+    if cookie_token is not None:
+        return await AuthService.get_user_from_cookie(session, cookie=cookie_token)
+    elif personal_access_token is not None:
+        return await AuthService.get_user_from_personal_access_token(
+            session, token=personal_access_token.credentials
+        )
+    return None
 
 
 async def current_user_required(
@@ -28,6 +47,9 @@ async def current_user_required(
 
 
 class Auth:
+    subject: Subject
+    user: User | None
+
     def __init__(
         self,
         *,
@@ -150,3 +172,11 @@ class Auth:
             )
 
         return cls(subject=user, user=user)
+
+
+class AuthRequired(Auth):
+    subject: User
+    user: User
+
+
+UserRequiredAuth = Annotated[AuthRequired, Depends(Auth.current_user)]

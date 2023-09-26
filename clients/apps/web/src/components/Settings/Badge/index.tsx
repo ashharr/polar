@@ -5,7 +5,6 @@ import {
 } from '@heroicons/react/24/outline'
 import { motion } from 'framer-motion'
 import { useRouter } from 'next/navigation'
-import { api } from 'polarkit/api'
 import {
   Organization,
   type OrganizationBadgeSettingsRead,
@@ -13,7 +12,11 @@ import {
   type RepositoryBadgeSettingsRead,
 } from 'polarkit/api/client'
 import { MoneyInput, PrimaryButton } from 'polarkit/components/ui'
-import { useBadgeSettings, useSSE } from 'polarkit/hooks'
+import {
+  useOrganizationBadgeSettings,
+  useSSE,
+  useUpdateOrganizationBadgeSettings,
+} from 'polarkit/hooks'
 import { classNames } from 'polarkit/utils'
 import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { useTimeoutFn } from 'react-use'
@@ -102,7 +105,7 @@ const BadgeSetup = ({
   setSyncIssuesCount: (state: number) => void
   isSettingPage?: boolean
 }) => {
-  const remoteSettings = useBadgeSettings(org.platform, org.name)
+  const remoteSettings = useOrganizationBadgeSettings(org.id)
   const [settings, setSettings] = useState<MappedRepoSettings>({
     show_amount: true,
     minimum_amount: 2000,
@@ -250,7 +253,6 @@ const BadgeSetup = ({
         <div className="w-full rounded-xl bg-white shadow dark:bg-gray-800 dark:ring-1 dark:ring-inset dark:ring-gray-700">
           <div className="flex flex-col space-y-4 p-5">
             <BadgeMessageForm
-              orgName={org.name}
               value={settings.message || ''}
               onUpdateMessage={async (value: string) => {}}
               onUpdateFundingGoal={async () => {}}
@@ -267,7 +269,9 @@ const BadgeSetup = ({
               }}
               onChangeFundingGoal={() => {}}
               innerClassNames="border"
-              funding={{}}
+              funding={{
+                pledges_sum: { amount: 5000, currency: 'USD' },
+              }}
               canSetFundingGoal={false}
             />
 
@@ -451,6 +455,8 @@ export const Controls = ({
   const [isSaving, setIsSaving] = useState(false)
   const [isSaved, setIsSaved] = useState(false)
 
+  const updateBadgeSettings = useUpdateOrganizationBadgeSettings()
+
   const save = async () => {
     const data: OrganizationBadgeSettingsUpdate = {
       show_amount: settings.show_amount,
@@ -467,10 +473,9 @@ export const Controls = ({
 
     setIsSaving(true)
 
-    await api.organizations.updateBadgeSettings({
-      platform: org.platform,
-      orgName: org.name,
-      requestBody: data,
+    await updateBadgeSettings.mutateAsync({
+      id: org.id,
+      settings: data,
     })
 
     setIsSaving(false)
@@ -550,7 +555,7 @@ export const Controls = ({
           </div>
           <div className="flex w-1/2 flex-row items-center space-x-2 text-xs text-gray-500">
             <ExclamationCircleIcon width={16} height={16} />
-            <p>Updates the modified at of the issues in Github.</p>
+            <p>Updates the modified at of the issues in GitHub.</p>
           </div>
         </div>
       )}

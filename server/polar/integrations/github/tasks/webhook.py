@@ -1,8 +1,11 @@
 from typing import Any, Sequence, Union
+from uuid import UUID
 
 import structlog
 
+from polar.config import settings
 from polar.context import ExecutionContext
+from polar.exceptions import PolarError
 from polar.integrations.github import client as github
 from polar.kit.extensions.sqlalchemy import sql
 from polar.kit.utils import utc_now
@@ -28,6 +31,88 @@ from .utils import (
 )
 
 log = structlog.get_logger()
+
+
+class GitHubTasksWebhookError(PolarError):
+    ...
+
+
+class UnknownRepositoryTransferOrganization(GitHubTasksWebhookError):
+    """
+    This error may be triggered by `repository_transferred` when we handle
+    a `repository.transferred` event, if the target organization is unknown to us.
+
+    This shouldn't happen since GitHub only triggers the event for target organization
+    that actually installed the application. Otherwise, we shouldn't have been pinged.
+
+    Ref: https://docs.github.com/en/webhooks/webhook-events-and-payloads?actionType=transferred#repository
+    """
+
+    def __init__(self, repository_id: UUID, new_organization_external_id: int) -> None:
+        self.repository_id = repository_id
+        self.new_organization_external_id = new_organization_external_id
+        message = "Tried to handle a repository transfer to an unknown organization"
+        super().__init__(message)
+
+
+class UnknownIssueTransferOrganization(GitHubTasksWebhookError):
+    """
+    This error may be triggered by `handle_issue_transferred` when we handle
+    a `issues.transferred` event, if the target organization is unknown to us.
+
+    This shouldn't happen since GitHub doesn't allow to transfer issue
+    between organizations.
+    """
+
+    def __init__(self, issue_id: UUID, new_organization_external_id: int) -> None:
+        self.issue_id = issue_id
+        self.new_organization_external_id = new_organization_external_id
+        message = "Tried to handle an issue transfer to an unknown organization"
+        super().__init__(message)
+
+
+# ------------------------------------------------------------------------------
+# ORGANIZATIONS
+# ------------------------------------------------------------------------------
+
+
+async def organization_updated(
+    session: AsyncSession,
+    event: github.webhooks.OrganizationRenamed,
+) -> dict[str, Any]:
+    with ExecutionContext(is_during_installation=True):
+        if not event.installation:
+            return dict(success=False)
+
+        organization = await service.github_organization.get_by_external_id(
+            session, event.organization.id
+        )
+        if not organization:
+            return dict(success=False)
+
+        organization.name = event.organization.login
+        organization.avatar_url = event.organization.avatar_url
+
+        await organization.save(session)
+
+        return dict(success=True)
+
+
+@task(name="github.webhook.organization.renamed")
+async def organizations_renamed(
+    ctx: JobContext,
+    scope: str,
+    action: str,
+    payload: dict[str, Any],
+    polar_context: PolarWorkerContext,
+) -> None:
+    with polar_context.to_execution_context():
+        parsed = github.webhooks.parse_obj(scope, payload)
+        if not isinstance(parsed, github.webhooks.OrganizationRenamed):
+            log.error("github.webhook.unexpected_type")
+            raise Exception("unexpected webhook payload")
+        async with AsyncSessionMaker(ctx) as session:
+            await organization_updated(session, parsed)
 
 
 # ------------------------------------------------------------------------------
@@ -96,6 +181,9 @@ async def create_from_installation(
     organization = await service.github_organization.create_or_update_from_github(
         session, account, installation=installation
     )
+    # Un-delete if previously deleted
+    organization.deleted_at = None
+    await organization.save(session)
 
     if removed:
         await remove_repositories(session, removed)
@@ -226,6 +314,23 @@ async def repositories_archived(
             await repository_updated(session, parsed)
 
 
+@task(name="github.webhook.repository.transferred")
+async def repositories_transferred(
+    ctx: JobContext,
+    scope: str,
+    action: str,
+    payload: dict[str, Any],
+    polar_context: PolarWorkerContext,
+) -> None:
+    with polar_context.to_execution_context():
+        parsed = github.webhooks.parse_obj(scope, payload)
+        if not isinstance(parsed, github.webhooks.RepositoryTransferred):
+            log.error("github.webhook.unexpected_type")
+            raise Exception("unexpected webhook payload")
+        async with AsyncSessionMaker(ctx) as session:
+            await repository_transferred(session, parsed)
+
+
 async def repository_updated(
     session: AsyncSession,
     event: Union[
@@ -276,6 +381,41 @@ async def repository_deleted(
         return dict(success=True)
 
 
+async def repository_transferred(
+    session: AsyncSession,
+    event: github.webhooks.RepositoryTransferred,
+) -> dict[str, Any]:
+    with ExecutionContext(is_during_installation=True):
+        if not event.installation:
+            return dict(success=False)
+
+        repository = await service.github_repository.get_by_external_id(
+            session, event.repository.id
+        )
+        if not repository:
+            # We don't know this repository yet, we can stop here:
+            # it'll be handled by `installation_repositories.added` event.
+            return dict(success=False)
+
+        new_organization_id = event.repository.owner.id
+        new_organization = await service.github_organization.get_by_external_id(
+            session, new_organization_id
+        )
+
+        if new_organization is None:
+            raise UnknownRepositoryTransferOrganization(
+                repository.id, new_organization_id
+            )
+
+        repository.organization = new_organization
+        # GitHub triggers the `installation_repositories.removed` event
+        # from the source installation, so make sure it's not deleted
+        repository.deleted_at = None
+        await repository.save(session)
+
+        return dict(success=True)
+
+
 # ------------------------------------------------------------------------------
 # ISSUES
 # ------------------------------------------------------------------------------
@@ -303,6 +443,42 @@ async def handle_issue(
     )
 
     return issue
+
+
+async def handle_issue_transferred(
+    session: AsyncSession,
+    scope: str,
+    action: str,
+    event: github.webhooks.IssuesTransferred,
+) -> Issue | None:
+    old_issue_id = event.issue.id
+    old_issue = await service.github_issue.get_by_external_id(session, old_issue_id)
+    if not old_issue:
+        return None
+
+    new_repository_data = event.changes.new_repository
+
+    organization_id = new_repository_data.owner.id
+    organization = await service.github_organization.get_by_external_id(
+        session, organization_id
+    )
+    if organization is None:
+        raise UnknownIssueTransferOrganization(old_issue.id, organization_id)
+
+    repository = await service.github_repository.create_or_update_from_github(
+        session, organization, new_repository_data
+    )
+
+    # The new issue may have already been created following `issues.added` webhook
+    new_issue = await service.github_issue.create_or_update_from_github(
+        session, organization, repository, event.changes.new_issue
+    )
+
+    new_issue = await service.github_issue.transfer(session, old_issue, new_issue)
+
+    await service.github_issue.soft_delete(session, old_issue.id)
+
+    return new_issue
 
 
 @task("github.webhook.issues.opened")
@@ -415,6 +591,24 @@ async def issue_deleted(
             await service.github_issue.soft_delete(session, issue.id)
 
 
+@task("github.webhook.issues.transferred")
+async def issue_transferred(
+    ctx: JobContext,
+    scope: str,
+    action: str,
+    payload: dict[str, Any],
+    polar_context: PolarWorkerContext,
+) -> None:
+    with polar_context.to_execution_context():
+        parsed = github.webhooks.parse_obj(scope, payload)
+        if not isinstance(parsed, github.webhooks.IssuesTransferred):
+            log.error("github.webhook.unexpected_type")
+            raise Exception("unexpected webhook payload")
+
+        async with AsyncSessionMaker(ctx) as session:
+            await handle_issue_transferred(session, scope, action, parsed)
+
+
 @task("github.webhook.issues.labeled")
 async def issue_labeled(
     ctx: JobContext,
@@ -515,20 +709,30 @@ async def issue_labeled_async(
         )
         return
 
+    repository = await service.github_repository.get(session, issue.repository_id)
+    assert repository is not None
+
+    labels = event.issue.labels
+    if not labels:
+        labels = []
+
     had_polar_label = issue.has_pledge_badge_label
-    issue = await service.github_issue.set_labels(session, issue, event.issue.labels)
+    issue = await service.github_issue.set_labels(session, issue, repository, labels)
 
     log.info(
         "github.webhook.issues.label",
         action=action,
         issue_id=issue.id,
-        label=event.label.name,
+        label=event.label.name if event.label else None,
         had_polar_label=had_polar_label,
         should_have_polar_label=issue.has_pledge_badge_label,
     )
 
     # Add/remove polar badge if label has changed
-    if event.label.name == "polar":
+    if (
+        event.label
+        and event.label.name.lower() == repository.pledge_badge_label.lower()
+    ):
         await update_issue_embed(
             session, issue=issue, embed=issue.has_pledge_badge_label
         )

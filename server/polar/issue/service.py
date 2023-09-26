@@ -24,6 +24,8 @@ from polar.kit.utils import utc_now
 from polar.models.issue import Issue
 from polar.models.issue_dependency import IssueDependency
 from polar.models.issue_reference import IssueReference
+from polar.models.issue_reward import IssueReward
+from polar.models.notification import Notification
 from polar.models.organization import Organization
 from polar.models.pledge import Pledge
 from polar.models.repository import Repository
@@ -105,8 +107,7 @@ class IssueService(ResourceService[Issue, IssueCreate, IssueUpdate]):
     async def list_by_repository_type_and_status(
         self,
         session: AsyncSession,
-        repository_ids: list[UUID],
-        issue_list_type: IssueListType,
+        repository_ids: list[UUID] = [],
         text: str | None = None,
         pledged_by_org: UUID
         | None = None,  # Only include issues that have been pledged by this org
@@ -151,35 +152,22 @@ class IssueService(ResourceService[Issue, IssueCreate, IssueUpdate]):
             )
         )
 
-        if issue_list_type == IssueListType.issues:
+        # issues in repo
+        if repository_ids:
             statement = statement.where(Issue.repository_id.in_(repository_ids))
-        elif issue_list_type == IssueListType.dependencies:
-            if not pledged_by_org and not pledged_by_user:
-                raise ValueError("no pledge_by criteria specified")
 
-            statement = statement.join(
-                IssueDependency,
-                IssueDependency.dependency_issue_id == Issue.id,
-                isouter=True,
-            )
+        # issues with pledges by
+        pledge_criterias: list[ColumnElement[bool]] = []
+        if pledged_by_org:
+            pledge_criterias.append(Pledge.by_organization_id == pledged_by_org)
 
-            pledge_criterias: list[ColumnElement[bool]] = []
-            if pledged_by_org:
-                pledge_criterias.append(Pledge.by_organization_id == pledged_by_org)
+        if pledged_by_user:
+            pledge_criterias.append(Pledge.by_user_id == pledged_by_user)
 
-            if pledged_by_user:
-                pledge_criterias.append(Pledge.by_user_id == pledged_by_user)
-
+        if len(pledge_criterias) > 0:
             statement = statement.where(
-                or_(
-                    IssueDependency.repository_id.in_(repository_ids),
-                    # Pledge.id.is_(None),
-                    or_(*pledge_criterias),
-                ),
+                or_(*pledge_criterias),
             )
-
-        else:
-            raise ValueError(f"Unknown issue list type: {issue_list_type}")
 
         # pledge filter
         if have_pledge is not None:
@@ -535,6 +523,47 @@ class IssueService(ResourceService[Issue, IssueCreate, IssueUpdate]):
         await session.commit()
 
         return True
+
+    async def transfer(
+        self, session: AsyncSession, old_issue: Issue, new_issue: Issue
+    ) -> Issue:
+        """
+        Transfer meaningful properties and linked objects from an issue to another.
+
+        Useful to handle GitHub issues transfer,
+        because it creates a new issue and deletes the old one.
+        """
+        for property in Issue.TRANSFERRABLE_PROPERTIES:
+            value = getattr(old_issue, property)
+            setattr(new_issue, property, value)
+        await new_issue.save(session, autocommit=False)
+
+        # Transfer Pledges
+        statement = (
+            sql.update(Pledge)
+            .where(Pledge.issue_id == old_issue.id)
+            .values(
+                issue_id=new_issue.id,
+                repository_id=new_issue.repository_id,
+                organization_id=new_issue.organization_id,
+            )
+        )
+        await session.execute(statement)
+
+        # Transfer IssueReward and Notification
+        for model in {IssueReward, Notification}:
+            statement = (
+                sql.update(model)
+                # TODO: could be nice to have a common mixin for issue_id foreign key
+                .where(model.issue_id == old_issue.id).values(  # type: ignore
+                    issue_id=new_issue.id
+                )
+            )
+            await session.execute(statement)
+
+        await session.commit()
+
+        return new_issue
 
 
 issue = IssueService(Issue)

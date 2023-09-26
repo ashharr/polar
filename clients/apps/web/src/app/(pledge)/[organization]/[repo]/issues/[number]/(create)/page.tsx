@@ -3,7 +3,7 @@ import { Metadata, ResolvingMetadata } from 'next'
 import { cookies } from 'next/headers'
 import { notFound } from 'next/navigation'
 import { buildAPI } from 'polarkit/api'
-import { ApiError, Issue } from 'polarkit/api/client'
+import { ApiError, Issue, Pledger } from 'polarkit/api/client'
 
 const authedApi = () => {
   const cookieStore = cookies()
@@ -71,11 +71,20 @@ export default async function Page({
   params: { organization: string; repo: string; number: string }
 }) {
   let issue: Issue | undefined
+  let issueHTMLBody: string | undefined
+  let pledgers: Pledger[] = []
 
   try {
-    issue = await authedApi().issues.lookup({
+    const api = authedApi()
+    issue = await api.issues.lookup({
       externalUrl: `https://github.com/${params.organization}/${params.repo}/issues/${params.number}`,
     })
+    const [bodyResponse, pledgeSummary] = await Promise.all([
+      api.issues.getBody({ id: issue.id }),
+      api.pledges.summary({ issueId: issue.id }),
+    ])
+    issueHTMLBody = bodyResponse
+    pledgers = pledgeSummary.pledges.map(({ pledger }) => pledger)
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) {
       notFound()
@@ -88,7 +97,12 @@ export default async function Page({
 
   return (
     <>
-      <Pledge issue={issue} gotoURL={undefined} />
+      <Pledge
+        issue={issue}
+        htmlBody={issueHTMLBody}
+        pledgers={pledgers}
+        gotoURL={undefined}
+      />
     </>
   )
 }

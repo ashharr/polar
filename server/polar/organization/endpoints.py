@@ -5,8 +5,10 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
-from polar.auth.dependencies import Auth
+from polar.auth.dependencies import Auth, UserRequiredAuth
+from polar.authz.service import AccessType, Authz
 from polar.enums import Platforms
+from polar.exceptions import ResourceNotFound, Unauthorized
 from polar.integrations.github.badge import GithubBadge
 from polar.postgres import AsyncSession, get_db_session
 from polar.repository.schemas import RepositoryLegacyRead
@@ -41,12 +43,9 @@ router = APIRouter(tags=["organizations"])
     status_code=200,
 )
 async def list(
-    auth: Auth = Depends(Auth.current_user),
+    auth: UserRequiredAuth,
     session: AsyncSession = Depends(get_db_session),
 ) -> ListResource[OrganizationSchema]:
-    if not auth.user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     orgs = await organization.list_all_orgs_by_user_id(session, auth.user.id)
     return ListResource(
         items=[OrganizationSchema.from_db(o) for o in orgs],
@@ -157,38 +156,27 @@ class OrganizationPrivateRead(OrganizationPrivateBase, OrganizationSettingsRead)
 
 
 @router.get(
-    "/{platform}/{org_name}",
-    response_model=OrganizationPrivateRead,
-    tags=[Tags.INTERNAL],
-    deprecated=True,  # Use the public get endpoint instead
-    summary="Get an organization (Internal API)",
-)
-async def getInternal(
-    platform: Platforms,
-    org_name: str,
-    auth: Auth = Depends(Auth.user_with_org_access),
-) -> OrganizationPrivateRead:
-    return OrganizationPrivateRead.from_orm(auth.organization)
-
-
-@router.get(
-    "/{platform}/{org_name}/badge_settings",
+    "/organizations/{id}/badge_settings",
     response_model=OrganizationBadgeSettingsRead,
     summary="Get badge settings (Internal API)",
 )
 async def get_badge_settings(
-    platform: Platforms,
-    org_name: str,
-    auth: Auth = Depends(Auth.user_with_org_access),
+    id: UUID,
+    auth: UserRequiredAuth,
+    authz: Authz = Depends(Authz.authz),
     session: AsyncSession = Depends(get_db_session),
 ) -> OrganizationBadgeSettingsRead:
+    org = await organization.get(session, id)
+    if not org:
+        raise ResourceNotFound()
+    if not await authz.can(auth.subject, AccessType.write, org):
+        raise Unauthorized()
+
     repositories = await repository_service.list_by(
-        session, org_ids=[auth.organization.id], order_by_open_source=True
+        session, org_ids=[org.id], order_by_open_source=True
     )
 
-    synced = await repository_service.get_repositories_synced_count(
-        session, auth.organization
-    )
+    synced = await repository_service.get_repositories_synced_count(session, org)
 
     repos = []
     for repo in repositories:
@@ -211,8 +199,9 @@ async def get_badge_settings(
         repos.append(
             RepositoryBadgeSettingsRead(
                 id=repo.id,
-                avatar_url=auth.organization.avatar_url,
+                avatar_url=org.avatar_url,
                 badge_auto_embed=repo.pledge_badge_auto_embed,
+                badge_label=repo.pledge_badge_label,
                 name=repo.name,
                 synced_issues=synced_issues,
                 auto_embedded_issues=synced_data["auto_embedded_issues"],
@@ -224,48 +213,35 @@ async def get_badge_settings(
             )
         )
 
-    message = auth.organization.default_badge_custom_content
+    message = org.default_badge_custom_content
     if not message:
-        message = GithubBadge.generate_default_promotion_message(auth.organization)
+        message = GithubBadge.generate_default_promotion_message(org)
 
     return OrganizationBadgeSettingsRead(
-        show_amount=auth.organization.pledge_badge_show_amount,
-        minimum_amount=auth.organization.pledge_minimum_amount,
+        show_amount=org.pledge_badge_show_amount,
+        minimum_amount=org.pledge_minimum_amount,
         message=message,
         repositories=repos,
     )
 
 
-@router.put(
-    "/{platform}/{org_name}/badge_settings",
+@router.post(
+    "/organizations/{id}/badge_settings",
     response_model=OrganizationBadgeSettingsUpdate,
     tags=[Tags.INTERNAL],
     summary="Update badge settings (Internal API)",
 )
 async def update_badge_settings(
-    platform: Platforms,
-    org_name: str,
+    id: UUID,
     settings: OrganizationBadgeSettingsUpdate,
-    auth: Auth = Depends(Auth.user_with_org_access),
+    auth: UserRequiredAuth,
+    authz: Authz = Depends(Authz.authz),
     session: AsyncSession = Depends(get_db_session),
 ) -> OrganizationBadgeSettingsUpdate:
-    return await organization.update_badge_settings(
-        session, auth.organization, settings
-    )
+    org = await organization.get(session, id)
+    if not org:
+        raise ResourceNotFound()
+    if not await authz.can(auth.subject, AccessType.write, org):
+        raise Unauthorized()
 
-
-@router.put(
-    "/{platform}/{org_name}/settings",
-    response_model=OrganizationPrivateRead,
-    tags=[Tags.INTERNAL],
-    summary="Update organization settings (Internal API)",
-)
-async def update_settings(
-    platform: Platforms,
-    org_name: str,
-    settings: OrganizationSettingsUpdate,
-    auth: Auth = Depends(Auth.user_with_org_access),
-    session: AsyncSession = Depends(get_db_session),
-) -> OrganizationPrivateRead:
-    updated = await organization.update_settings(session, auth.organization, settings)
-    return OrganizationPrivateRead.from_orm(updated)
+    return await organization.update_badge_settings(session, org, settings)

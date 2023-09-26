@@ -8,8 +8,11 @@ from uuid import UUID
 from pydantic import Field
 
 from polar.currency.schemas import CurrencyAmount
+from polar.exceptions import PolarError
+from polar.funding.schemas import Funding
 from polar.issue.schemas import Issue
 from polar.kit.schemas import Schema
+from polar.models import Organization, User
 from polar.models.pledge import Pledge as PledgeModel
 
 
@@ -111,9 +114,6 @@ class PledgeType(str, Enum):
     # Pledge without upfront payment. The pledger pays after the issue is completed.
     pay_on_completion = "pay_on_completion"
 
-    # Pledge without upfront payment. Added bonus / bounty from maintainer to collaborators.  # noqa: E501
-    pay_from_maintainer = "pay_from_maintainer"
-
     # Pay directly. Money is ready to transfered to maintainer without requiring
     # issue to be completed.
     pay_directly = "pay_directly"
@@ -185,6 +185,37 @@ class Pledge(Schema):
         )
 
 
+class SummaryPledge(Schema):
+    type: PledgeType = Field(description="Type of pledge")
+    pledger: Pledger
+
+    @classmethod
+    def from_db(cls, o: PledgeModel) -> SummaryPledge:
+        pledger_model = o.pledger
+        if isinstance(pledger_model, Organization):
+            pledger = Pledger(
+                name=pledger_model.name,
+                github_username=pledger_model.name,
+                avatar_url=pledger_model.avatar_url,
+            )
+        else:
+            pledger = Pledger(
+                name=pledger_model.username,
+                github_username=pledger_model.username,
+                avatar_url=pledger_model.avatar_url,
+            )
+
+        return SummaryPledge(
+            type=PledgeType.from_str(o.type),
+            pledger=pledger,
+        )
+
+
+class PledgesSummary(Schema):
+    funding: Funding
+    pledges: list[SummaryPledge]
+
+
 # Internal APIs below
 
 
@@ -240,6 +271,7 @@ class PledgeRead(Schema):
     pledger_user_id: UUID | None = None
 
     state: PledgeState
+    type: PledgeType = Field(description="Type of pledge")
 
     pledger_name: str | None
     pledger_avatar: str | None
@@ -274,6 +306,7 @@ class PledgeRead(Schema):
             organization_id=o.organization_id,
             amount=o.amount,
             state=PledgeState.from_str(o.state),
+            type=PledgeType.from_str(o.type),
             pledger_name=pledger_name,
             pledger_avatar=pledger_avatar,
             scheduled_payout_at=o.scheduled_payout_at,

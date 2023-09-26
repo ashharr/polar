@@ -15,6 +15,7 @@ import {
   PledgeRead,
   PledgeState,
   PledgeType,
+  Pledger,
   PledgerPledgePendingNotification,
   Repository,
   RewardPaidNotification,
@@ -76,6 +77,7 @@ export const repo: Repository = {
   description: 'Data validation using Python type hints',
   homepage: 'https://docs.pydantic.dev/latest/',
   organization: org,
+  stars: 26000,
 }
 
 // Public API
@@ -83,6 +85,13 @@ export const issue: Issue = {
   platform: Platforms.GITHUB,
   number: 222,
   title: 'SecretStr comparison fails when field is defined with Field',
+  author: {
+    id: 123,
+    login: 'zegl',
+    avatar_url: 'https://avatars.githubusercontent.com/u/47952?v=4',
+    html_url: 'https://github.com/zegl',
+  },
+  comments: 5,
   reactions: {
     total_count: 3,
     plus_one: 3,
@@ -102,6 +111,14 @@ export const issue: Issue = {
   needs_confirmation_solved: false,
 }
 
+export const issueBodyHTML = `<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit,
+sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris
+nisi ut aliquip ex ea commodo consequat. <strong>Duis aute irure dolor</strong> in
+reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.
+Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia
+deserunt mollit anim id est laborum.</p>`
+
 export const pledge: PledgeRead = {
   id: 'pppp',
   created_at: addDays(new Date(), -7).toISOString(),
@@ -110,10 +127,14 @@ export const pledge: PledgeRead = {
   repository_id: repo.id,
   organization_id: org.id,
   state: PledgeState.CREATED,
-  // pledger_name?: string;
-  // pledger_avatar?: string;
-  // authed_user_can_admin?: boolean;
-  //scheduled_payout_at?: string;
+  type: PledgeType.PAY_UPFRONT,
+  pledger_avatar: 'https://avatars.githubusercontent.com/u/1426460?v=4',
+}
+
+export const pledger: Pledger = {
+  name: 'zegl',
+  github_username: 'zegl',
+  avatar_url: 'https://avatars.githubusercontent.com/u/47952?v=4',
 }
 
 // PublicAPI
@@ -122,14 +143,9 @@ export const pledgePublicAPI: Pledge = {
   created_at: addDays(new Date(), -7).toISOString(),
   issue: issue,
   amount: { currency: 'USD', amount: 3000 },
-  // repository_id: repo.id,
-  // organization_id: org.id,
   state: PledgeState.CREATED,
   type: PledgeType.PAY_UPFRONT,
-  // pledger_name?: string;
-  // pledger_avatar?: string;
-  // authed_user_can_admin?: boolean;
-  //scheduled_payout_at?: string;
+  pledger: pledger,
 }
 
 export const privateOrganization: OrganizationPrivateRead = {

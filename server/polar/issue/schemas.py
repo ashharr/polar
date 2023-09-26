@@ -7,7 +7,7 @@ from uuid import UUID
 
 import structlog
 from fastapi.encoders import jsonable_encoder
-from pydantic import Field, parse_obj_as
+from pydantic import Field, HttpUrl, parse_obj_as
 
 from polar.currency.schemas import CurrencyAmount
 from polar.dashboard.schemas import IssueStatus
@@ -54,19 +54,27 @@ class Label(Schema):
     color: str
 
 
+class Author(Schema):
+    id: int
+    login: str
+    html_url: HttpUrl
+    avatar_url: HttpUrl
+
+
 # Public API
 class Issue(Schema):
     id: UUID
-    platform: Platforms = Field(description="Issue platform (currently always Github)")
-    number: int = Field(description="Github #number")
-    title: str = Field(description="Github issue title")
-    body: str | None = Field(description="Github issue body")
+    platform: Platforms = Field(description="Issue platform (currently always GitHub)")
+    number: int = Field(description="GitHub #number")
+    title: str = Field(description="GitHub issue title")
+    body: str | None = Field(description="GitHub issue body")
     comments: int | None = Field(
-        description="Number of Github comments made on the issue"
+        description="Number of GitHub comments made on the issue"
     )
     labels: list[Label] = []
 
-    reactions: Reactions | None = Field(description="Github reactions")
+    author: Author | None = Field(description="GitHub author")
+    reactions: Reactions | None = Field(description="GitHub reactions")
 
     state: Literal["OPEN", "CLOSED"]
 
@@ -122,6 +130,7 @@ class Issue(Schema):
             issue_created_at=i.issue_created_at,
             needs_confirmation_solved=i.needs_confirmation_solved,
             confirmed_solved_at=i.confirmed_solved_at,
+            author=parse_obj_as(Author, i.author) if i.author else None,
             reactions=parse_obj_as(Reactions, i.reactions) if i.reactions else None,
             funding=funding,
             repository=Repository.from_db(i.repository),
@@ -282,7 +291,7 @@ class IssueAndPullRequestBase(Base):
 class IssueCreate(IssueAndPullRequestBase):
     external_lookup_key: str | None = None
     has_pledge_badge_label: bool = False
-    pledge_badge_currently_embedded: bool = False
+    pledge_badge_embedded_at: datetime | None = None
     positive_reactions_count: int = 0
     total_engagement_count: int = 0
 
@@ -303,12 +312,12 @@ class IssueCreate(IssueAndPullRequestBase):
 
         ret.external_lookup_key = f"{organization.name}/{repository.name}/{data.number}"
 
-        ret.has_pledge_badge_label = IssueModel.contains_pledge_badge_label(ret.labels)
+        ret.has_pledge_badge_label = IssueModel.contains_pledge_badge_label(
+            ret.labels, repository.pledge_badge_label
+        )
 
-        if ret.body:
-            ret.pledge_badge_currently_embedded = GithubBadge.badge_is_embedded(
-                ret.body
-            )
+        if ret.body and GithubBadge.badge_is_embedded(ret.body):
+            ret.pledge_badge_embedded_at = ret.issue_modified_at
 
         # this is not good, we're risking setting positive_reactions_count to 0 if the
         # payload is missing
@@ -324,7 +333,7 @@ class IssueCreate(IssueAndPullRequestBase):
                 + data.reactions.rocket
             )
 
-        ret.total_engagement_count = data.reactions.total_count + data.comments
+            ret.total_engagement_count = data.reactions.total_count + data.comments
 
         return ret
 
@@ -340,12 +349,6 @@ class IssueRead(IssueCreate):
 
     class Config:
         orm_mode = True
-
-
-class GetIssuePath(Schema):
-    organization: str
-    repo: str
-    number: int
 
 
 class IssueReferenceType(str, Enum):

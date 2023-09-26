@@ -1,5 +1,7 @@
 import { Controls } from '@/components/Settings/Badge'
 import type { Meta, StoryObj } from '@storybook/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from 'polarkit'
 import { RepositoryBadgeSettingsRead } from 'polarkit/api/client'
 
 const meta: Meta<typeof Controls> = {
@@ -11,6 +13,11 @@ const meta: Meta<typeof Controls> = {
       appDirectory: true,
     },
   },
+  render: (args) => (
+    <QueryClientProvider client={queryClient}>
+      <Controls {...args} />
+    </QueryClientProvider>
+  ),
 }
 
 export default meta
@@ -27,6 +34,7 @@ const repo: RepositoryBadgeSettingsRead = {
   label_embedded_issues: 0,
   pull_requests: 5,
   badge_auto_embed: false,
+  badge_label: 'Fund',
   is_private: false,
   is_sync_completed: false,
 }

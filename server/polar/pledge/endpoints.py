@@ -3,10 +3,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from polar import locker
-from polar.auth.dependencies import Auth
+from polar.auth.dependencies import Auth, UserRequiredAuth
 from polar.authz.service import AccessType, Authz
+from polar.currency.schemas import CurrencyAmount
 from polar.enums import Platforms
 from polar.exceptions import ResourceNotFound, Unauthorized
+from polar.funding.schemas import Funding
 from polar.issue.service import issue as issue_service
 from polar.organization.service import organization as organization_service
 from polar.postgres import AsyncSession, get_db_session
@@ -22,9 +24,12 @@ from .schemas import (
     CreatePledgeFromPaymentIntent,
     CreatePledgePayLater,
     PledgeRead,
+    PledgesSummary,
     PledgeStripePaymentIntentCreate,
     PledgeStripePaymentIntentMutationResponse,
     PledgeStripePaymentIntentUpdate,
+    PledgeType,
+    SummaryPledge,
 )
 from .schemas import (
     Pledge as PledgeSchema,
@@ -150,6 +155,43 @@ async def search(
 
 
 @router.get(
+    "/pledges/summary",
+    response_model=PledgesSummary,
+    tags=[Tags.PUBLIC],
+    description="Get summary of pledges for resource.",  # noqa: E501
+    summary="Get pledges summary (Public API)",
+    status_code=200,
+)
+async def summary(
+    issue_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    auth: Auth = Depends(Auth.optional_user),
+    authz: Authz = Depends(Authz.authz),
+) -> PledgesSummary:
+    issue = await issue_service.get(session, issue_id)
+    if not issue:
+        raise ResourceNotFound()
+
+    if not await authz.can(auth.subject, AccessType.read, issue):
+        raise Unauthorized()
+
+    pledges = await pledge_service.list_by(session, issue_ids=[issue_id])
+
+    sum_pledges = sum([p.amount for p in pledges])
+
+    funding = Funding(
+        funding_goal=CurrencyAmount(currency="USD", amount=issue.funding_goal)
+        if issue.funding_goal
+        else None,
+        pledges_sum=CurrencyAmount(currency="USD", amount=sum_pledges),
+    )
+
+    summary_pledges = [SummaryPledge.from_db(p) for p in pledges]
+
+    return PledgesSummary(funding=funding, pledges=summary_pledges)
+
+
+@router.get(
     "/pledges/{id}",
     response_model=PledgeSchema,
     tags=[Tags.PUBLIC],
@@ -159,8 +201,8 @@ async def search(
 )
 async def get(
     id: UUID,
+    auth: UserRequiredAuth,
     session: AsyncSession = Depends(get_db_session),
-    auth: Auth = Depends(Auth.current_user),
     authz: Authz = Depends(Authz.authz),
 ) -> PledgeSchema:
     pledge = await pledge_service.get_with_loaded(session, id)
@@ -221,13 +263,10 @@ async def create(
 )
 async def create_pay_on_completion(
     create: CreatePledgePayLater,
+    auth: UserRequiredAuth,
     session: AsyncSession = Depends(get_db_session),
-    auth: Auth = Depends(Auth.current_user),
     authz: Authz = Depends(Authz.authz),
 ) -> PledgeSchema:
-    if not auth.user:
-        raise Unauthorized()
-
     pledge = await pledge_service.create_pay_on_completion(
         session=session,
         issue_id=create.issue_id,
@@ -253,13 +292,10 @@ async def create_pay_on_completion(
 )
 async def create_invoice(
     id: UUID,
+    auth: UserRequiredAuth,
     session: AsyncSession = Depends(get_db_session),
-    auth: Auth = Depends(Auth.current_user),
     authz: Authz = Depends(Authz.authz),
 ) -> PledgeSchema:
-    if not auth.user:
-        raise Unauthorized()
-
     pledge = await pledge_service.get(session, id)
     if not pledge:
         raise ResourceNotFound()
@@ -330,12 +366,9 @@ async def update_payment_intent(
 async def dispute_pledge(
     pledge_id: UUID,
     reason: str,
-    auth: Auth = Depends(Auth.current_user),
+    auth: UserRequiredAuth,
     session: AsyncSession = Depends(get_db_session),
 ) -> PledgeRead:
-    if not auth.user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     pledge = await pledge_service.get(session, pledge_id)
     if not pledge:
         raise HTTPException(status_code=404, detail="Pledge not found")

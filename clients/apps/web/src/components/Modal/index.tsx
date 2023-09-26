@@ -1,6 +1,7 @@
 import React, { FunctionComponent, MouseEvent, useEffect } from 'react'
 import ReactDOM from 'react-dom'
 import FocusLock from 'react-focus-lock'
+import { twMerge } from 'tailwind-merge'
 
 export interface ModalProps {
   isShown: boolean
@@ -38,21 +39,22 @@ export const Modal: FunctionComponent<ModalProps> = ({
     <React.Fragment>
       <FocusLock>
         <div
-          className="fixed top-0 bottom-0 left-0 right-0 z-50"
+          className="fixed bottom-0 left-0 right-0 top-0 z-50"
           aria-modal
           tabIndex={-1}
           role="dialog"
         >
           <div
-            className="flex h-full w-full items-center justify-center bg-black/50"
+            className="flex h-full w-full flex-col items-center  bg-black/50 py-2"
             onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
               hide()
             }}
           >
+            <div className="flex-shrink-1 block h-[20%] w-2"></div>
             <div
-              className="z-10 min-w-[800px] overflow-hidden rounded-xl bg-white shadow dark:bg-gray-800"
+              className="h-content z-10 min-w-[800px] flex-shrink-0 overflow-hidden rounded-xl bg-white shadow dark:bg-gray-800"
               onClick={onInnerClick}
             >
               {modalContent}
@@ -68,10 +70,16 @@ export const Modal: FunctionComponent<ModalProps> = ({
 
 export const ModalHeader = (props: {
   children: React.ReactElement
+  className?: string
   hide: () => void
 }) => {
   return (
-    <div className="flex w-full items-center justify-between border-b px-5 py-3 dark:bg-gray-800">
+    <div
+      className={twMerge(
+        'flex w-full items-center justify-between border-b px-5 py-3 dark:bg-gray-800',
+        props.className,
+      )}
+    >
       <div>{props.children}</div>
       <button
         className="text-black hover:text-gray-800 dark:text-gray-100 dark:hover:text-gray-300"

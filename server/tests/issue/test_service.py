@@ -15,11 +15,10 @@ from polar.models.organization import Organization
 from polar.models.pledge import Pledge
 from polar.models.repository import Repository
 from polar.models.user import User
-from polar.models.user_organization import UserOrganization
 from polar.pledge.schemas import PledgeState
+from polar.pledge.service import pledge as pledge_service
 from polar.postgres import AsyncSession
-from tests import fixtures
-from tests.fixtures import predictable_objects, random_objects
+from tests.fixtures import random_objects
 
 
 @pytest.mark.asyncio
@@ -94,7 +93,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
     )
 
@@ -105,7 +103,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, _) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.recently_updated,
     )
 
@@ -115,7 +112,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, _) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.least_recently_updated,
     )
 
@@ -125,7 +121,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, _) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.most_positive_reactions,
     )
 
@@ -140,7 +135,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, _) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.issues_default,
     )
 
@@ -150,7 +144,6 @@ async def test_list_by_repository_type_and_status_sorting(
     (issues, _) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.most_engagement,
     )
 
@@ -326,7 +319,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.backlog, IssueStatus.triaged],
     )
@@ -340,7 +332,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.triaged],
     )
@@ -356,7 +347,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.in_progress],
     )
@@ -372,7 +362,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.pull_request],
     )
@@ -389,7 +378,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.closed],
     )
@@ -406,7 +394,6 @@ async def test_list_by_repository_type_and_status_filter_triaged(
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
         repository_ids=[repository.id],
-        issue_list_type=IssueListType.issues,
         sort_by=IssueSortBy.newest,
         include_statuses=[IssueStatus.backlog],
     )
@@ -498,8 +485,6 @@ async def test_list_by_repository_type_and_status_dependencies_pledge(
 
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
-        repository_ids=[repository.id],
-        issue_list_type=IssueListType.dependencies,
         sort_by=IssueSortBy.newest,
         pledged_by_org=organization.id,
         pledged_by_user=user.id,
@@ -568,8 +553,6 @@ async def test_list_by_repository_type_and_status_dependencies_pledge_state(
 
     (issues, count) = await issue_service.list_by_repository_type_and_status(
         session,
-        repository_ids=[repository.id],
-        issue_list_type=IssueListType.dependencies,
         sort_by=IssueSortBy.newest,
         pledged_by_org=organization.id,
         pledged_by_user=user.id,
@@ -582,51 +565,6 @@ async def test_list_by_repository_type_and_status_dependencies_pledge_state(
         "pledged_towards_PledgeState.disputed",
         "pledged_towards_PledgeState.created",
     ]
-
-
-@pytest.mark.asyncio
-async def test_list_by_repository_type_and_status_dependencies_dependency(
-    session: AsyncSession,
-    repository: Repository,
-    organization: Organization,
-    issue: Issue,
-    user: User,
-) -> None:
-    # Third party issue
-
-    third_party_org = await random_objects.create_organization(session)
-    third_party_repo = await random_objects.create_repository(session, third_party_org)
-    third_party_issue = await random_objects.create_issue(
-        session, third_party_org, third_party_repo
-    )
-    third_party_issue.title = "is_a_dependency"
-    await third_party_issue.save(session)
-
-    # Create dependency
-    dep = await IssueDependency.create(
-        session=session,
-        organization_id=organization.id,
-        repository_id=repository.id,
-        dependent_issue_id=issue.id,
-        dependency_issue_id=third_party_issue.id,
-    )
-
-    (issues, count) = await issue_service.list_by_repository_type_and_status(
-        session,
-        repository_ids=[repository.id],
-        issue_list_type=IssueListType.dependencies,
-        sort_by=IssueSortBy.newest,
-        pledged_by_org=organization.id,
-        pledged_by_user=user.id,
-        load_pledges=True,
-    )
-
-    # assert count == 1
-    names = [i.title for i in issues]
-    assert names == ["is_a_dependency"]
-
-    # only the pledges by pledged_by_org/pledged_by_user should be included
-    # assert len(issues[0].issue.pledges_zegl) == 1
 
 
 @pytest.mark.asyncio
@@ -680,10 +618,45 @@ async def test_list_by_github_milestone_number(
         (issues, count) = await issue_service.list_by_repository_type_and_status(
             session,
             repository_ids=[repository.id],
-            issue_list_type=IssueListType.issues,
             sort_by=IssueSortBy.newest,
             github_milestone_number=milestone,
         )
 
         names = [i.title for i in issues]
         assert names == expected
+
+
+@pytest.mark.asyncio
+async def test_transfer(
+    session: AsyncSession,
+    organization: Organization,
+    pledging_organization: Organization,
+) -> None:
+    old_repository = await random_objects.create_repository(
+        session, organization, is_private=False
+    )
+    old_issue = await random_objects.create_issue(session, organization, old_repository)
+    old_issue.funding_goal = 10_000
+
+    pledges = [
+        await random_objects.create_pledge(
+            session, organization, old_repository, old_issue, pledging_organization
+        )
+        for _ in range(2)
+    ]
+
+    new_repository = await random_objects.create_repository(
+        session, organization, is_private=False
+    )
+    new_issue = await random_objects.create_issue(session, organization, new_repository)
+
+    updated_new_issue = await issue_service.transfer(session, old_issue, new_issue)
+
+    assert updated_new_issue.funding_goal == 10_000
+
+    for pledge in pledges:
+        updated_pledge = await pledge_service.get(session, pledge.id)
+        assert updated_pledge is not None
+        assert updated_pledge.organization_id == organization.id
+        assert updated_pledge.repository_id == new_repository.id
+        assert updated_pledge.issue_id == new_issue.id
